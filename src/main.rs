@@ -13,11 +13,11 @@ use clap::Parser;
 #[command(name = "coding-agent", about = "A minimal coding agent")]
 struct Args {
     /// OpenAI-compatible API base URL
-    #[arg(long, default_value = "http://localhost:11434/v1")]
+    #[arg(long, default_value = "http://0.0.0.0:8080/v1")]
     api_url: String,
 
     /// Model to use
-    #[arg(long, short, default_value = "qwen3:30b-a3b")]
+    #[arg(long, short, default_value = "default")]
     model: String,
 
     /// API key (optional)

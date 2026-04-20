@@ -23,8 +23,8 @@ cargo build --release
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--api-url` | `http://localhost:11434/v1` | OpenAI-compatible API base URL |
-| `-m, --model` | `qwen3:30b-a3b` | Model to use |
+| `--api-url` | `http://0.0.0.0:8080/v1` | OpenAI-compatible API base URL |
+| `-m, --model` | `default` | Model to use |
 | `-a, --api-key` | none | API key (optional for local models) |
 | `--system-prompt` | built-in | Override the default system prompt |
 | `--plugins` | `./plugins` | Directory to load Lua plugins from (skipped if absent) |
