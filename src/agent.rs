@@ -26,6 +26,7 @@ pub enum AgentCommand {
 }
 
 pub enum UiEvent {
+    PluginsLoaded { count: usize },
     Thinking(String),
     AssistantText(String),
     ToolCall { name: String, args_summary: String },
@@ -59,8 +60,14 @@ pub fn run(
 
     let mut plugins = PluginManager::new();
     if let Some(ref dir) = plugin_dir {
-        if let Err(e) = plugins.load_dir(Path::new(dir)) {
-            eprintln!("[plugins] {}", e);
+        match plugins.load_dir(Path::new(dir)) {
+            Ok(count) if count > 0 => {
+                let _ = ui_tx.send(UiEvent::PluginsLoaded { count });
+            }
+            Err(e) => {
+                let _ = ui_tx.send(UiEvent::Error(format!("[plugins] {}", e)));
+            }
+            _ => {}
         }
     }
     all_tools.extend(plugins.definitions().to_vec());

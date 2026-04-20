@@ -68,9 +68,9 @@ impl PluginManager {
         }
     }
 
-    pub fn load_dir(&mut self, dir: &Path) -> Result<(), String> {
+    pub fn load_dir(&mut self, dir: &Path) -> Result<usize, String> {
         if !dir.exists() {
-            return Ok(());
+            return Ok(0);
         }
 
         let entries: Vec<_> = fs::read_dir(dir)
@@ -79,15 +79,21 @@ impl PluginManager {
             .filter(|e| e.path().extension().is_some_and(|ext| ext == "lua"))
             .collect();
 
+        let mut total = 0;
+        let mut errors = Vec::new();
         for entry in entries {
             let path = entry.path();
             match self.load_file(&path) {
-                Ok(count) => eprintln!("[plugins] loaded {} tool(s) from {}", count, path.display()),
-                Err(e) => eprintln!("[plugins] error in {}: {}", path.display(), e),
+                Ok(count) => total += count,
+                Err(e) => errors.push(format!("{}: {}", path.display(), e)),
             }
         }
 
-        Ok(())
+        if errors.is_empty() {
+            Ok(total)
+        } else {
+            Err(format!("plugin load errors: {}", errors.join("; ")))
+        }
     }
 
     fn load_file(&mut self, path: &Path) -> Result<usize, String> {

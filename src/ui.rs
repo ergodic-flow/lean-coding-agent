@@ -43,6 +43,7 @@ pub struct App {
     context_limit: u64,
     context_tokens: u64,
     total_output_tokens: u64,
+    plugin_count: usize,
     pending_cancel: bool,
     esc_press_time: Option<Instant>,
     cancel: Arc<AtomicBool>,
@@ -69,6 +70,7 @@ impl App {
             context_limit,
             context_tokens: 0,
             total_output_tokens: 0,
+            plugin_count: 0,
             pending_cancel: false,
             esc_press_time: None,
             cancel,
@@ -187,6 +189,9 @@ impl App {
 
     fn handle_ui_event(&mut self, event: UiEvent) {
         match event {
+            UiEvent::PluginsLoaded { count } => {
+                self.plugin_count = count;
+            }
             UiEvent::Thinking(text) => {
                 self.items.push(ConversationItem::Thinking(text));
             }
@@ -268,13 +273,19 @@ impl App {
             ""
         };
 
+        let plugin_label = if self.plugin_count > 0 {
+            format!(" | plugins:{}", self.plugin_count)
+        } else {
+            String::new()
+        };
+
         let left_text = if self.busy {
             let s = self.spinner();
-            format!(" {} coding-agent | {} |{}", s, self.model, busy_label)
+            format!(" {} coding-agent | {}{} |{}", s, self.model, plugin_label, busy_label)
         } else {
             format!(
-                "   coding-agent | {} | Shift+↑↓ scroll · Ctrl+C quit",
-                self.model
+                "   coding-agent | {}{} | Shift+↑↓ scroll · Ctrl+C quit",
+                self.model, plugin_label
             )
         };
 
