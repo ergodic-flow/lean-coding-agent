@@ -58,23 +58,9 @@ The agent can load custom tools written in Lua from a plugins directory. Each `.
 
 ![screenshot of tool usage](/assets/image.jpeg)
 
-### How It Works
+See [plugins/arithmetic.lua](/plugins/arithmetic.lua) for a concrete example on how to write one.
 
-1. On startup, the agent scans the plugins directory for `.lua` files
-2. Each file is executed in a Lua 5.4 runtime (vendored, no system dependency)
-3. Tools are registered via the `tool()` function
-4. Tool definitions are merged with built-in tools and sent to the model
-5. When the model calls a plugin tool, the handler function executes in Lua
-
-Bad plugins are skipped with a warning — the agent continues without them.
-
-### Writing a Plugin
-
-See [plugins/arithmetic.lua](/plugins/arithmetic.lua) for a concrete example.
-
-Note: http calls and json parsing are supported in lua plugins.
-
-Drop `.lua` files into `./plugins/` and restart the agent to load them.
+NOTE: http calls and json parsing are supported in lua plugins.
 
 ## Acknowledgements
 
