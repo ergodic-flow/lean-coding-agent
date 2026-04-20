@@ -41,14 +41,6 @@ Four tools are always available:
 
 All file tools resolve relative paths against the current working directory.
 
-## TUI
-
-The terminal UI is built with ratatui and shows:
-
-- **Header bar** — Model name, status (idle/thinking/canceling), and token usage stats
-- **Conversation area** — Scrollable history of user messages, assistant responses, thinking, tool calls with output, and per-response metadata
-- **Input bar** — Single-line input with visible cursor
-
 ### Keybindings
 
 | Key | Action |
@@ -59,23 +51,6 @@ The terminal UI is built with ratatui and shows:
 | `Esc` (twice, within 2s) | Cancel the in-flight request |
 | `Shift+Up/Down` | Scroll conversation by 3 lines |
 | `PageUp/PageDown` | Scroll conversation by 20 lines |
-
-### Token Usage Display
-
-The header shows real-time token stats, right-aligned:
-
-```
-ctx:12.3k/128k (10%) · out:1.2k
-```
-
-- **ctx** — Current context size from the latest API response, shown as a fraction of the model's context window with percentage
-- **out** — Cumulative completion tokens generated across all turns
-
-After each assistant response, a metadata line shows throughput:
-
-```
-487 tokens · 32.5 tok/s · 15.0s
-```
 
 ## Lua Plugin System
 
@@ -95,85 +70,11 @@ Bad plugins are skipped with a warning — the agent continues without them.
 
 ### Writing a Plugin
 
-```lua
-tool {
-    name = "my_tool",
-    description = "What this tool does",
-    parameters = {
-        type = "object",
-        properties = {
-            input = {
-                type = "string",
-                description = "Some input"
-            }
-        },
-        required = { "input" }
-    },
-    handler = function(args)
-        return "result: " .. args.input
-    end
-}
-```
+See [plugins/arithmetic.lua](/plugins/arithmetic.lua) for a concrete example.
 
-The `parameters` table follows JSON Schema format — it's passed directly to the API as the tool's parameter schema.
-
-The `handler` function receives a table of arguments (converted from JSON) and must return a string.
-
-### Example: arithmetic.lua
-
-The included plugin provides basic arithmetic:
-
-```lua
-tool {
-    name = "arithmetic",
-    description = "Perform basic arithmetic operations (add, subtract, multiply, divide) on two numbers.",
-    parameters = {
-        type = "object",
-        properties = {
-            operation = {
-                type = "string",
-                description = "The operation: add, subtract, multiply, or divide"
-            },
-            a = { type = "number", description = "First operand" },
-            b = { type = "number", description = "Second operand" }
-        },
-        required = { "operation", "a", "b" }
-    },
-    handler = function(args)
-        local op = args.operation
-        local a = tonumber(args.a)
-        local b = tonumber(args.b)
-        if op == "add" then return string.format("%.10g", a + b) end
-        if op == "subtract" then return string.format("%.10g", a - b) end
-        if op == "multiply" then return string.format("%.10g", a * b) end
-        if op == "divide" then
-            if b == 0 then return "Error: division by zero" end
-            return string.format("%.10g", a / b)
-        end
-        return "Error: unknown operation"
-    end
-}
-```
+Note: http calls and json parsing are supported in lua plugins.
 
 Drop `.lua` files into `./plugins/` and restart the agent to load them.
-
-## Architecture
-
-```
-src/
-├── main.rs      CLI parsing, thread spawning
-├── api.rs       OpenAI-compatible HTTP client (ureq)
-├── agent.rs     Agent loop: send messages, dispatch tools, stream events to UI
-├── tools.rs     Built-in tools: bash, read, write, edit
-├── plugins.rs   Lua plugin loader and executor (mlua)
-└── ui.rs        Terminal UI (ratatui + crossterm)
-```
-
-The agent runs on a background thread and communicates with the UI via channels:
-- `AgentCommand::Send` — UI sends user input to the agent
-- `UiEvent` — Agent sends responses, tool output, token stats, and completion signals to the UI
-
-A shared `AtomicBool` cancel flag lets the UI signal cancellation. The agent checks it between iterations of its tool-calling loop.
 
 ## Acknowledgements
 
