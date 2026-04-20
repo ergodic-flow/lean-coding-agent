@@ -30,6 +30,38 @@ impl PluginManager {
             )
             .expect("lua globals");
 
+        lua.globals()
+            .set(
+                "http_get",
+                lua.create_function(|_, url: String| {
+                    let agent = ureq::AgentBuilder::new()
+                        .user_agent("coding-agent/0.1")
+                        .timeout_read(std::time::Duration::from_secs(30))
+                        .build();
+                    let response = agent.get(&url).call().map_err(|e| {
+                        mlua::Error::external(format!("HTTP request failed: {}", e))
+                    })?;
+                    response.into_string().map_err(|e| {
+                        mlua::Error::external(format!("Failed to read response: {}", e))
+                    })
+                })
+                .expect("lua create_function http_get"),
+            )
+            .expect("lua globals set http_get");
+
+        lua.globals()
+            .set(
+                "json_decode",
+                lua.create_function(|lua, json_str: String| {
+                    let val: serde_json::Value = serde_json::from_str(&json_str).map_err(|e| {
+                        mlua::Error::external(format!("JSON parse error: {}", e))
+                    })?;
+                    lua.to_value(&val)
+                })
+                .expect("lua create_function json_decode"),
+            )
+            .expect("lua globals set json_decode");
+
         Self {
             lua,
             tools: Vec::new(),
