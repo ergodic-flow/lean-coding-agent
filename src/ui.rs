@@ -192,11 +192,21 @@ impl App {
             UiEvent::PluginsLoaded { count } => {
                 self.plugin_count = count;
             }
-            UiEvent::Thinking(text) => {
-                self.items.push(ConversationItem::Thinking(text));
+            UiEvent::ThinkingStart => {
+                self.items.push(ConversationItem::Thinking(String::new()));
             }
-            UiEvent::AssistantText(text) => {
-                self.items.push(ConversationItem::AssistantText(text));
+            UiEvent::ThinkingDelta(text) => {
+                if let Some(ConversationItem::Thinking(ref mut s)) = self.items.last_mut() {
+                    s.push_str(&text);
+                }
+            }
+            UiEvent::TextStart => {
+                self.items.push(ConversationItem::AssistantText(String::new()));
+            }
+            UiEvent::TextDelta(text) => {
+                if let Some(ConversationItem::AssistantText(ref mut s)) = self.items.last_mut() {
+                    s.push_str(&text);
+                }
             }
             UiEvent::ToolCall { name, args_summary } => {
                 self.items.push(ConversationItem::ToolBlock {
@@ -485,13 +495,19 @@ impl App {
         }
 
         if self.busy {
-            let s = self.spinner();
-            lines.push(Line::from(Span::styled(
-                format!(" {} Thinking...", s),
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-            )));
+            let last_is_text = matches!(
+                self.items.last(),
+                Some(ConversationItem::AssistantText(_)) | Some(ConversationItem::Thinking(_))
+            );
+            if !last_is_text {
+                let s = self.spinner();
+                lines.push(Line::from(Span::styled(
+                    format!(" {} Thinking...", s),
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                )));
+            }
         }
 
         lines

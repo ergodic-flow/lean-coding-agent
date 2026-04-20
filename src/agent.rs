@@ -27,8 +27,10 @@ pub enum AgentCommand {
 
 pub enum UiEvent {
     PluginsLoaded { count: usize },
-    Thinking(String),
-    AssistantText(String),
+    ThinkingStart,
+    ThinkingDelta(String),
+    TextStart,
+    TextDelta(String),
     ToolCall { name: String, args_summary: String },
     ToolResult { output_summary: String },
     TokenUsage { context: u64, output: u64 },
@@ -107,100 +109,125 @@ fn agent_loop(
         let request = ChatRequest {
             model: model.to_string(),
             messages: messages.clone(),
+            stream: true,
             tools: Some(tool_defs.to_vec()),
         };
 
         let start = Instant::now();
-        let response = client.chat(&request)?;
-        let elapsed = start.elapsed().as_secs_f64();
 
-        if let Some(ref usage) = response.usage {
-            let _ = ui_tx.send(UiEvent::TokenUsage {
-                context: usage.prompt_tokens,
-                output: usage.completion_tokens,
-            });
+        let mut has_tool_calls = false;
+        let mut tool_call_ids: Vec<String> = Vec::new();
+        let mut tool_call_names: Vec<String> = Vec::new();
+        let mut thinking_started = false;
+        let mut text_started = false;
 
-            let tok_per_sec = if elapsed > 0.0 {
-                usage.completion_tokens as f64 / elapsed
-            } else {
-                0.0
-            };
-            let _ = ui_tx.send(UiEvent::ResponseMeta {
-                tokens: usage.completion_tokens,
-                elapsed_secs: elapsed,
-                tok_per_sec,
-            });
-        }
-
-        let choice = response
-            .choices
-            .into_iter()
-            .next()
-            .ok_or("No response choices from API")?;
-
-        let has_tool_calls = choice.message.tool_calls.is_some();
-
-        if let Some(ref reasoning) = choice.message.reasoning_content {
-            if !reasoning.is_empty() {
-                let _ = ui_tx.send(UiEvent::Thinking(reasoning.clone()));
+        client.chat_stream(&request, |event| {
+            if cancel.load(Ordering::Relaxed) {
+                return Err("cancelled".to_string());
             }
-        }
 
-        if let Some(ref content) = choice.message.content {
-            if !content.is_empty() {
-                let _ = ui_tx.send(UiEvent::AssistantText(content.clone()));
+            match event {
+                api::StreamEvent::ThinkingDelta(text) => {
+                    if !thinking_started {
+                        thinking_started = true;
+                        let _ = ui_tx.send(UiEvent::ThinkingStart);
+                    }
+                    let _ = ui_tx.send(UiEvent::ThinkingDelta(text));
+                    Ok(())
+                }
+                api::StreamEvent::ContentDelta(text) => {
+                    if !text_started {
+                        text_started = true;
+                        let _ = ui_tx.send(UiEvent::TextStart);
+                    }
+                    let _ = ui_tx.send(UiEvent::TextDelta(text));
+                    Ok(())
+                }
+                api::StreamEvent::ToolCallBegin { index, id, name } => {
+                    has_tool_calls = true;
+                    while tool_call_ids.len() <= index {
+                        tool_call_ids.push(String::new());
+                        tool_call_names.push(String::new());
+                    }
+                    tool_call_ids[index] = id;
+                    tool_call_names[index] = name;
+                    Ok(())
+                }
+                api::StreamEvent::ToolCallDelta { .. } => Ok(()),
+                api::StreamEvent::Done { message, usage } => {
+                    let elapsed = start.elapsed().as_secs_f64();
+
+                    if let Some(ref u) = usage {
+                        let _ = ui_tx.send(UiEvent::TokenUsage {
+                            context: u.prompt_tokens,
+                            output: u.completion_tokens,
+                        });
+                        let tok_per_sec = if elapsed > 0.0 {
+                            u.completion_tokens as f64 / elapsed
+                        } else {
+                            0.0
+                        };
+                        let _ = ui_tx.send(UiEvent::ResponseMeta {
+                            tokens: u.completion_tokens,
+                            elapsed_secs: elapsed,
+                            tok_per_sec,
+                        });
+                    }
+
+                    messages.push(Message::Assistant {
+                        content: message.content.clone(),
+                        tool_calls: message.tool_calls.clone(),
+                    });
+
+                    if let Some(tcs) = &message.tool_calls {
+                        for tc in tcs {
+                            let args: serde_json::Value =
+                                serde_json::from_str(&tc.function.arguments).unwrap_or_default();
+
+                            let args_summary = summarize_args(&tc.function.name, &args);
+                            let _ = ui_tx.send(UiEvent::ToolCall {
+                                name: tc.function.name.clone(),
+                                args_summary,
+                            });
+
+                            let result = if plugins.has_tool(&tc.function.name) {
+                                plugins.execute(&tc.function.name, args)
+                            } else {
+                                tools::execute(&tc.function.name, args)
+                            };
+
+                            let display = if result.len() > 500 {
+                                let truncated: String = result.chars().take(500).collect();
+                                format!("{}...\n[truncated, {} chars total]", truncated, result.len())
+                            } else {
+                                result.clone()
+                            };
+                            let _ = ui_tx.send(UiEvent::ToolResult {
+                                output_summary: display,
+                            });
+
+                            let for_api = if result.len() > MAX_TOOL_OUTPUT {
+                                let truncated: String = result.chars().take(MAX_TOOL_OUTPUT).collect();
+                                format!(
+                                    "{}\n\n[output truncated, {} total characters]",
+                                    truncated,
+                                    result.len()
+                                )
+                            } else {
+                                result
+                            };
+
+                            messages.push(Message::Tool {
+                                tool_call_id: tc.id.clone(),
+                                content: for_api,
+                            });
+                        }
+                    }
+
+                    Ok(())
+                }
             }
-        }
-
-        messages.push(Message::Assistant {
-            content: choice.message.content.clone(),
-            tool_calls: choice.message.tool_calls.clone(),
-        });
-
-        if let Some(tool_calls) = choice.message.tool_calls {
-            for tc in &tool_calls {
-                let args: serde_json::Value =
-                    serde_json::from_str(&tc.function.arguments).unwrap_or_default();
-
-                let args_summary = summarize_args(&tc.function.name, &args);
-                let _ = ui_tx.send(UiEvent::ToolCall {
-                    name: tc.function.name.clone(),
-                    args_summary,
-                });
-
-                let result = if plugins.has_tool(&tc.function.name) {
-                    plugins.execute(&tc.function.name, args)
-                } else {
-                    tools::execute(&tc.function.name, args)
-                };
-
-                let display = if result.len() > 500 {
-                    let truncated: String = result.chars().take(500).collect();
-                    format!("{}...\n[truncated, {} chars total]", truncated, result.len())
-                } else {
-                    result.clone()
-                };
-                let _ = ui_tx.send(UiEvent::ToolResult {
-                    output_summary: display,
-                });
-
-                let for_api = if result.len() > MAX_TOOL_OUTPUT {
-                    let truncated: String = result.chars().take(MAX_TOOL_OUTPUT).collect();
-                    format!(
-                        "{}\n\n[output truncated, {} total characters]",
-                        truncated,
-                        result.len()
-                    )
-                } else {
-                    result
-                };
-
-                messages.push(Message::Tool {
-                    tool_call_id: tc.id.clone(),
-                    content: for_api,
-                });
-            }
-        }
+        })?;
 
         if !has_tool_calls {
             return Ok(());
