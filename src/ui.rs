@@ -35,6 +35,7 @@ enum ConversationItem {
 pub struct App {
     items: Vec<ConversationItem>,
     input: String,
+    cursor: usize,
     scroll_offset: usize,
     auto_scroll: bool,
     busy: bool,
@@ -62,6 +63,7 @@ impl App {
         Self {
             items: Vec::new(),
             input: String::new(),
+            cursor: 0,
             scroll_offset: 0,
             auto_scroll: true,
             busy: false,
@@ -132,10 +134,70 @@ impl App {
                     {
                         return Ok(());
                     }
+                    KeyCode::Char('a')
+                        if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                    {
+                        if !self.busy {
+                            self.cursor = 0;
+                        }
+                    }
+                    KeyCode::Char('e')
+                        if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                    {
+                        if !self.busy {
+                            self.cursor = self.input.chars().count();
+                        }
+                    }
+                    KeyCode::Char('k')
+                        if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                    {
+                        if !self.busy {
+                            let byte_pos = self.char_to_byte(self.cursor);
+                            self.input.truncate(byte_pos);
+                        }
+                    }
+                    KeyCode::Char('u')
+                        if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                    {
+                        if !self.busy {
+                            let byte_pos = self.char_to_byte(self.cursor);
+                            self.input = self.input[byte_pos..].to_string();
+                            self.cursor = 0;
+                        }
+                    }
+                    KeyCode::Char('w')
+                        if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                    {
+                        if !self.busy {
+                            let chars: Vec<char> = self.input.chars().collect();
+                            let mut i = self.cursor;
+                            while i > 0 && chars[i - 1] == ' ' {
+                                i -= 1;
+                            }
+                            while i > 0 && chars[i - 1] != ' ' {
+                                i -= 1;
+                            }
+                            let byte_start = chars[..i]
+                                .iter()
+                                .map(|c| c.len_utf8())
+                                .sum();
+                            let byte_end = chars[..self.cursor]
+                                .iter()
+                                .map(|c| c.len_utf8())
+                                .sum();
+                            self.input = format!(
+                                "{}{}",
+                                &self.input[..byte_start],
+                                &self.input[byte_end..]
+                            );
+                            self.cursor = i;
+                        }
+                    }
                     KeyCode::Enter => {
                         if !self.busy && !self.input.is_empty() {
                             let msg = self.input.clone();
                             self.input.clear();
+                            self.cursor = 0;
                             self.items.push(ConversationItem::UserMessage(msg.clone()));
                             self.busy = true;
                             self.busy_since = Some(Instant::now());
@@ -145,14 +207,42 @@ impl App {
                                 .map_err(|e| e.to_string())?;
                         }
                     }
-                    KeyCode::Char(ch) => {
+                    KeyCode::Char(ch) if key.modifiers == KeyModifiers::NONE => {
                         if !self.busy {
-                            self.input.push(ch);
+                            self.insert_char(ch);
                         }
                     }
                     KeyCode::Backspace => {
+                        if !self.busy && self.cursor > 0 {
+                            self.delete_before_cursor();
+                        }
+                    }
+                    KeyCode::Delete => {
                         if !self.busy {
-                            self.input.pop();
+                            self.delete_at_cursor();
+                        }
+                    }
+                    KeyCode::Left => {
+                        if !self.busy && self.cursor > 0 {
+                            self.cursor -= 1;
+                        }
+                    }
+                    KeyCode::Right => {
+                        if !self.busy {
+                            let len = self.input.chars().count();
+                            if self.cursor < len {
+                                self.cursor += 1;
+                            }
+                        }
+                    }
+                    KeyCode::Home => {
+                        if !self.busy {
+                            self.cursor = 0;
+                        }
+                    }
+                    KeyCode::End => {
+                        if !self.busy {
+                            self.cursor = self.input.chars().count();
                         }
                     }
                     KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => {
@@ -275,7 +365,46 @@ impl App {
         }
     }
 
+    fn char_to_byte(&self, char_idx: usize) -> usize {
+        self.input
+            .char_indices()
+            .nth(char_idx)
+            .map(|(i, _)| i)
+            .unwrap_or(self.input.len())
+    }
 
+    fn insert_char(&mut self, ch: char) {
+        let byte_pos = self.char_to_byte(self.cursor);
+        self.input.insert(byte_pos, ch);
+        self.cursor += 1;
+    }
+
+    fn delete_before_cursor(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        let chars: Vec<char> = self.input.chars().collect();
+        let byte_pos: usize = chars[..self.cursor - 1]
+            .iter()
+            .map(|c| c.len_utf8())
+            .sum();
+        let byte_end = byte_pos + chars[self.cursor - 1].len_utf8();
+        self.input.drain(byte_pos..byte_end);
+        self.cursor -= 1;
+    }
+
+    fn delete_at_cursor(&mut self) {
+        let chars: Vec<char> = self.input.chars().collect();
+        if self.cursor >= chars.len() {
+            return;
+        }
+        let byte_pos: usize = chars[..self.cursor]
+            .iter()
+            .map(|c| c.len_utf8())
+            .sum();
+        let byte_end = byte_pos + chars[self.cursor].len_utf8();
+        self.input.drain(byte_pos..byte_end);
+    }
 
     fn draw_header(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
         let cancel_label = if self.pending_cancel {
@@ -414,7 +543,7 @@ impl App {
             let paragraph = Paragraph::new(line);
             frame.render_widget(paragraph, inner);
 
-            let cursor_x = inner.x + 2 + self.input.chars().count() as u16;
+            let cursor_x = inner.x + 2 + self.cursor as u16;
             let cursor_y = inner.y;
             frame.set_cursor_position((cursor_x, cursor_y));
         }
