@@ -244,6 +244,7 @@ impl App {
                 self.busy_since = None;
                 self.pending_cancel = false;
                 self.esc_press_time = None;
+                self.cancel.store(false, Ordering::Relaxed);
             }
         }
     }
@@ -254,7 +255,7 @@ impl App {
             .constraints([
                 Constraint::Length(1),
                 Constraint::Min(0),
-                Constraint::Length(2),
+                Constraint::Length(3),
             ])
             .split(frame.area());
 
@@ -274,11 +275,11 @@ impl App {
         }
     }
 
+
+
     fn draw_header(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
-        let busy_label = if self.pending_cancel {
-            " press Esc again to cancel..."
-        } else if self.busy {
-            " thinking..."
+        let cancel_label = if self.pending_cancel {
+            "  press Esc again to cancel"
         } else {
             ""
         };
@@ -289,18 +290,29 @@ impl App {
             String::new()
         };
 
-        let left_text = if self.busy {
-            let s = self.spinner();
-            format!(" {} coding-agent | {}{} |{}", s, self.model, plugin_label, busy_label)
-        } else {
-            format!(
-                "   coding-agent | {}{} | Shift+↑↓ scroll · Ctrl+C quit",
-                self.model, plugin_label
-            )
-        };
+        let base_style = Style::default().fg(Color::Black).bg(Color::Gray);
+        let highlight_style = base_style.add_modifier(Modifier::BOLD);
 
-        let ctx_pct = if self.context_limit > 0 && self.context_tokens > 0 {
-            let pct = (self.context_tokens as f64 / self.context_limit as f64 * 100.0).min(100.0);
+        let mut spans: Vec<Span<'_>> = Vec::new();
+
+        if self.pending_cancel {
+            spans.push(Span::styled(
+                format!(" {}{}", self.model, plugin_label),
+                Style::default().fg(Color::White).bg(Color::Red).add_modifier(Modifier::BOLD),
+            ));
+            spans.push(Span::styled(cancel_label, Style::default().fg(Color::White).bg(Color::Red)));
+        } else {
+            spans.push(Span::styled(format!(" {}{}", self.model, plugin_label), highlight_style));
+            spans.push(Span::styled(" | ", base_style));
+            spans.push(Span::styled("Shift+↑↓ scroll · Ctrl+C quit", Style::default().fg(Color::DarkGray).bg(Color::Gray)));
+        }
+
+        let ctx_pct = if self.context_limit > 0 {
+            let pct = if self.context_tokens > 0 {
+                (self.context_tokens as f64 / self.context_limit as f64 * 100.0).min(100.0)
+            } else {
+                0.0
+            };
             format!(
                 "ctx:{}/{} ({:.0}%) · out:{} ",
                 format_tokens(self.context_tokens),
@@ -321,32 +333,30 @@ impl App {
         let tokens_width = ctx_pct.chars().count() as u16;
         let left_width = area.width.saturating_sub(tokens_width);
 
-        let style = if self.pending_cancel {
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Red)
-                .add_modifier(Modifier::BOLD)
-        } else if self.busy {
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Yellow)
-                .add_modifier(Modifier::BOLD)
+        let token_style = if self.pending_cancel {
+            Style::default().fg(Color::White).bg(Color::Red)
         } else {
-            Style::default().fg(Color::White).bg(Color::DarkGray)
+            Style::default().fg(Color::Black).bg(Color::Gray)
         };
-        let token_fg = if self.pending_cancel { Color::Red } else { Color::Yellow };
-        let token_bg = if self.pending_cancel { Color::Red } else if self.busy { Color::Yellow } else { Color::DarkGray };
 
-        let header = Line::from(vec![
-            Span::styled(format!("{:<width$}", left_text, width = left_width as usize), style),
-            Span::styled(ctx_pct, Style::default().fg(token_fg).bg(token_bg)),
-        ]);
+        let span_chars: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+        let pad = left_width as usize;
+        if span_chars < pad {
+            spans.push(Span::styled(
+                " ".repeat(pad - span_chars),
+                base_style,
+            ));
+        }
+
+        spans.push(Span::styled(ctx_pct, token_style));
+
+        let header = Line::from(spans);
         let paragraph = Paragraph::new(header);
         frame.render_widget(paragraph, area);
     }
 
     fn draw_conversation(&mut self, frame: &mut Frame, area: ratatui::layout::Rect) {
-        let all_lines = self.build_lines();
+        let all_lines = self.build_lines(area.width);
         let total = all_lines.len();
         let visible = area.height as usize;
 
@@ -375,30 +385,43 @@ impl App {
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
-        let prompt_style = Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD);
-        let input_style = if self.busy {
-            Style::default().fg(Color::DarkGray)
+        if self.busy {
+            let s = self.spinner();
+            let cancel_hint = if self.pending_cancel {
+                "  press Esc again to cancel"
+            } else {
+                "  Esc to cancel"
+            };
+            let line = Line::from(vec![
+                Span::styled(
+                    format!(" {} ", s),
+                    Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("generating...", Style::default().fg(Color::Green)),
+                Span::styled(cancel_hint, Style::default().fg(Color::DarkGray)),
+            ]);
+            let paragraph = Paragraph::new(line);
+            frame.render_widget(paragraph, inner);
         } else {
-            Style::default()
-        };
+            let prompt_style = Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD);
 
-        let line = Line::from(vec![
-            Span::styled("> ", prompt_style),
-            Span::styled(self.input.clone(), input_style),
-        ]);
-        let paragraph = Paragraph::new(line);
-        frame.render_widget(paragraph, inner);
+            let line = Line::from(vec![
+                Span::styled("> ", prompt_style),
+                Span::styled(self.input.clone(), Style::default()),
+            ]);
+            let paragraph = Paragraph::new(line);
+            frame.render_widget(paragraph, inner);
 
-        if !self.busy {
             let cursor_x = inner.x + 2 + self.input.chars().count() as u16;
             let cursor_y = inner.y;
             frame.set_cursor_position((cursor_x, cursor_y));
         }
     }
 
-    fn build_lines(&self) -> Vec<Line<'static>> {
+    fn build_lines(&self, width: u16) -> Vec<Line<'static>> {
+        let w = width as usize;
         let mut lines: Vec<Line<'static>> = Vec::new();
 
         for item in &self.items {
@@ -410,22 +433,16 @@ impl App {
                             .fg(Color::Cyan)
                             .add_modifier(Modifier::BOLD),
                     )));
-                    for line in msg.lines() {
-                        lines.push(Line::from(Span::styled(
-                            format!("  {}", line),
-                            Style::default().fg(Color::Cyan),
-                        )));
+                    for wrapped in wrap_lines(msg, 2, w) {
+                        lines.push(Line::from(Span::styled(wrapped, Style::default().fg(Color::Cyan))));
                     }
                     lines.push(Line::from(""));
                 }
                 ConversationItem::Thinking(msg) => {
                     let dim = Style::default().fg(Color::DarkGray);
                     lines.push(Line::from(Span::styled("  Thinking...", dim)));
-                    for line in msg.lines() {
-                        lines.push(Line::from(Span::styled(
-                            format!("  {}", line),
-                            dim,
-                        )));
+                    for wrapped in wrap_lines(msg, 2, w) {
+                        lines.push(Line::from(Span::styled(wrapped, dim)));
                     }
                     lines.push(Line::from(""));
                 }
@@ -436,17 +453,17 @@ impl App {
                             .fg(Color::Green)
                             .add_modifier(Modifier::BOLD),
                     )));
-                    for line in msg.lines() {
-                        lines.push(Line::from(format!("  {}", line)));
+                    for wrapped in wrap_lines(msg, 2, w) {
+                        lines.push(Line::from(wrapped));
                     }
                     lines.push(Line::from(""));
                 }
                 ConversationItem::ResponseMeta { tokens, elapsed_secs, tok_per_sec } => {
                     let dim = Style::default().fg(Color::DarkGray);
-                    lines.push(Line::from(Span::styled(
-                        format!("  {} tokens · {:.1} tok/s · {:.1}s", tokens, tok_per_sec, elapsed_secs),
-                        dim,
-                    )));
+                    let meta = format!("  {} tokens · {:.1} tok/s · {:.1}s", tokens, tok_per_sec, elapsed_secs);
+                    for wrapped in wrap_single(&meta, 0, w) {
+                        lines.push(Line::from(Span::styled(wrapped, dim)));
+                    }
                     lines.push(Line::from(""));
                 }
                 ConversationItem::ToolBlock {
@@ -456,28 +473,22 @@ impl App {
                     is_running,
                 } => {
                     let status = if *is_running {
-                        " ...".to_string()
+                        " ..."
                     } else {
-                        String::new()
+                        ""
                     };
-                    lines.push(Line::from(vec![
-                        Span::styled(
-                            format!(" [{}] ", name),
-                            Style::default()
-                                .fg(Color::Yellow)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                        Span::styled(
-                            format!("{}{}", args_summary, status),
-                            Style::default().fg(Color::Yellow),
-                        ),
-                    ]));
+                    let header = format!(" [{}] {}{}", name, args_summary, status);
+                    lines.push(Line::from(Span::styled(
+                        header,
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    )));
                     let dim = Style::default().fg(Color::DarkGray);
                     for line in output.lines() {
-                        lines.push(Line::from(Span::styled(
-                            format!(" │ {}", line),
-                            dim,
-                        )));
+                        for wrapped in wrap_line_prefix(line, " │ ", w) {
+                            lines.push(Line::from(Span::styled(wrapped, dim)));
+                        }
                     }
                     if !output.is_empty() {
                         lines.push(Line::from(Span::styled(" └", dim)));
@@ -485,28 +496,12 @@ impl App {
                     lines.push(Line::from(""));
                 }
                 ConversationItem::Error(msg) => {
-                    lines.push(Line::from(Span::styled(
-                        format!(" Error: {}", msg),
-                        Style::default().fg(Color::Red),
-                    )));
+                    let err = format!(" Error: {}", msg);
+                    for wrapped in wrap_single(&err, 0, w) {
+                        lines.push(Line::from(Span::styled(wrapped, Style::default().fg(Color::Red))));
+                    }
                     lines.push(Line::from(""));
                 }
-            }
-        }
-
-        if self.busy {
-            let last_is_text = matches!(
-                self.items.last(),
-                Some(ConversationItem::AssistantText(_)) | Some(ConversationItem::Thinking(_))
-            );
-            if !last_is_text {
-                let s = self.spinner();
-                lines.push(Line::from(Span::styled(
-                    format!(" {} Thinking...", s),
-                    Style::default()
-                        .fg(Color::Green)
-                        .add_modifier(Modifier::BOLD),
-                )));
             }
         }
 
@@ -522,4 +517,88 @@ fn format_tokens(n: u64) -> String {
     } else {
         format!("{}", n)
     }
+}
+
+fn wrap_lines(text: &str, indent: usize, max_width: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    let inner = max_width.saturating_sub(indent);
+    for line in text.lines() {
+        if inner == 0 || line.chars().count() <= inner {
+            out.push(format!("{}{}", " ".repeat(indent), line));
+        } else {
+            let mut current = String::new();
+            for word in line.split_whitespace() {
+                if current.is_empty() {
+                    current = word.to_string();
+                } else if current.chars().count() + 1 + word.chars().count() <= inner {
+                    current.push(' ');
+                    current.push_str(word);
+                } else {
+                    out.push(format!("{}{}", " ".repeat(indent), current));
+                    current = word.to_string();
+                }
+            }
+            if !current.is_empty() {
+                out.push(format!("{}{}", " ".repeat(indent), current));
+            }
+        }
+    }
+    if out.is_empty() {
+        out.push(" ".repeat(indent));
+    }
+    out
+}
+
+fn wrap_single(line: &str, indent: usize, max_width: usize) -> Vec<String> {
+    let inner = max_width.saturating_sub(indent);
+    if inner == 0 || line.chars().count() <= max_width {
+        return vec![line.to_string()];
+    }
+    let indent_str = " ".repeat(indent);
+    let content = line.trim_start();
+    let mut out = Vec::new();
+    let mut current = String::new();
+    for word in content.split_whitespace() {
+        if current.is_empty() {
+            current = word.to_string();
+        } else if current.chars().count() + 1 + word.chars().count() <= inner {
+            current.push(' ');
+            current.push_str(word);
+        } else {
+            out.push(format!("{}{}", indent_str, current));
+            current = word.to_string();
+        }
+    }
+    if !current.is_empty() {
+        out.push(format!("{}{}", indent_str, current));
+    }
+    if out.is_empty() {
+        out.push(line.to_string());
+    }
+    out
+}
+
+fn wrap_line_prefix(line: &str, prefix: &str, max_width: usize) -> Vec<String> {
+    let prefix_len = prefix.chars().count();
+    let inner = max_width.saturating_sub(prefix_len);
+    if inner == 0 || line.chars().count() <= inner {
+        return vec![format!("{}{}", prefix, line)];
+    }
+    let mut out = Vec::new();
+    let mut current = String::new();
+    for word in line.split_whitespace() {
+        if current.is_empty() {
+            current = word.to_string();
+        } else if current.chars().count() + 1 + word.chars().count() <= inner {
+            current.push(' ');
+            current.push_str(word);
+        } else {
+            out.push(format!("{}{}", prefix, current));
+            current = word.to_string();
+        }
+    }
+    if !current.is_empty() {
+        out.push(format!("{}{}", prefix, current));
+    }
+    out
 }
