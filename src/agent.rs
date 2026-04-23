@@ -174,8 +174,13 @@ fn agent_loop(
                         });
                     }
 
+                    let content = if message.content.is_none() && message.tool_calls.is_none() {
+                        Some(String::new())
+                    } else {
+                        message.content.clone()
+                    };
                     messages.push(Message::Assistant {
-                        content: message.content.clone(),
+                        content,
                         tool_calls: message.tool_calls.clone(),
                     });
 
