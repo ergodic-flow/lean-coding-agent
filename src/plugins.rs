@@ -139,10 +139,18 @@ impl PluginManager {
                 .get("handler")
                 .map_err(|e| format!("Missing 'handler': {}", e))?;
 
-            let parameters: serde_json::Value = self
+            let mut parameters: serde_json::Value = self
                 .lua
                 .from_value(params_val)
                 .map_err(|e| format!("Invalid parameters for '{}': {}", name, e))?;
+
+            if let Some(obj) = parameters.as_object_mut() {
+                if let Some(required) = obj.get_mut("required") {
+                    if required.is_object() && required.as_object().unwrap().is_empty() {
+                        *required = serde_json::Value::Array(vec![]);
+                    }
+                }
+            }
 
             handlers
                 .set(name.clone(), handler)
