@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::Instant;
 
-use crate::api::{self, ChatRequest, Message};
+use crate::api::{self, ChatRequest, Message, StreamOptions};
 use crate::plugins::PluginManager;
 use crate::tools;
 
@@ -111,6 +111,7 @@ fn agent_loop(
             messages: messages.clone(),
             stream: true,
             tools: Some(tool_defs.to_vec()),
+            stream_options: Some(StreamOptions { include_usage: true }),
         };
 
         let start = Instant::now();
