@@ -207,7 +207,7 @@ impl App {
                                 .map_err(|e| e.to_string())?;
                         }
                     }
-                    KeyCode::Char(ch) if key.modifiers == KeyModifiers::NONE => {
+                    KeyCode::Char(ch) if !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
                         if !self.busy {
                             self.insert_char(ch);
                         }
