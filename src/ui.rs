@@ -20,7 +20,7 @@ const SPINNER_INTERVAL_MS: u64 = 80;
 
 enum ConversationItem {
     UserMessage(String),
-    Thinking(String),
+    Thinking { text: String, is_running: bool },
     AssistantText(String),
     ResponseMeta { tokens: u64, elapsed_secs: f64, tok_per_sec: f64 },
     ToolBlock {
@@ -283,14 +283,18 @@ impl App {
                 self.plugin_count = count;
             }
             UiEvent::ThinkingStart => {
-                self.items.push(ConversationItem::Thinking(String::new()));
+                self.items.push(ConversationItem::Thinking {
+                    text: String::new(),
+                    is_running: true,
+                });
             }
-            UiEvent::ThinkingDelta(text) => {
-                if let Some(ConversationItem::Thinking(ref mut s)) = self.items.last_mut() {
-                    s.push_str(&text);
+            UiEvent::ThinkingDelta(delta) => {
+                if let Some(ConversationItem::Thinking { ref mut text, .. }) = self.items.last_mut() {
+                    text.push_str(&delta);
                 }
             }
             UiEvent::TextStart => {
+                self.end_active_thinking();
                 self.items.push(ConversationItem::AssistantText(String::new()));
             }
             UiEvent::TextDelta(text) => {
@@ -299,6 +303,7 @@ impl App {
                 }
             }
             UiEvent::ToolCall { name, args_summary } => {
+                self.end_active_thinking();
                 self.items.push(ConversationItem::ToolBlock {
                     name,
                     args_summary,
@@ -316,6 +321,7 @@ impl App {
                 }
             }
             UiEvent::Error(msg) => {
+                self.end_active_thinking();
                 self.items.push(ConversationItem::Error(msg));
             }
             UiEvent::TokenUsage { context, output } => {
@@ -330,11 +336,21 @@ impl App {
                 });
             }
             UiEvent::Done => {
+                self.end_active_thinking();
                 self.busy = false;
                 self.busy_since = None;
                 self.pending_cancel = false;
                 self.esc_press_time = None;
                 self.cancel.store(false, Ordering::Relaxed);
+            }
+        }
+    }
+
+    fn end_active_thinking(&mut self) {
+        for item in self.items.iter_mut().rev() {
+            if let ConversationItem::Thinking { ref mut is_running, .. } = item {
+                *is_running = false;
+                break;
             }
         }
     }
@@ -567,10 +583,11 @@ impl App {
                     }
                     lines.push(Line::from(""));
                 }
-                ConversationItem::Thinking(msg) => {
+                ConversationItem::Thinking { text, is_running } => {
                     let dim = Style::default().fg(Color::DarkGray);
-                    lines.push(Line::from(Span::styled("  Thinking...", dim)));
-                    for wrapped in wrap_lines(msg, 2, w) {
+                    let label = if *is_running { "  Thinking..." } else { "  Thought" };
+                    lines.push(Line::from(Span::styled(label, dim)));
+                    for wrapped in wrap_lines(text, 2, w) {
                         lines.push(Line::from(Span::styled(wrapped, dim)));
                     }
                     lines.push(Line::from(""));
