@@ -315,13 +315,28 @@ impl App {
         }
     }
 
+    fn input_height(&self, terminal_width: u16) -> u16 {
+        if self.input.is_empty() || self.busy {
+            return 3;
+        }
+        let prompt_width: usize = 2;
+        let inner_width = (terminal_width as usize).saturating_sub(2).saturating_sub(prompt_width);
+        if inner_width == 0 {
+            return 3;
+        }
+        let chars_len = self.input.chars().count();
+        let lines = (chars_len + inner_width - 1) / inner_width;
+        (lines as u16).saturating_add(2).min(10)
+    }
+
     fn draw(&mut self, frame: &mut Frame) {
+        let input_h = self.input_height(frame.area().width);
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(1),
                 Constraint::Min(0),
-                Constraint::Length(3),
+                Constraint::Length(input_h),
             ])
             .split(frame.area());
 
@@ -502,16 +517,61 @@ impl App {
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD);
 
-            let line = Line::from(vec![
-                Span::styled("> ", prompt_style),
-                Span::styled(self.input.clone(), Style::default()),
-            ]);
-            let paragraph = Paragraph::new(line);
+            let prompt_width: usize = 2;
+            let inner_width = inner.width as usize;
+            let text_width = inner_width.saturating_sub(prompt_width).max(1);
+
+            let chars: Vec<char> = self.input.chars().collect();
+            let mut wrapped_lines: Vec<String> = Vec::new();
+            let mut current_line = String::new();
+            let mut cursor_row: u16 = 0;
+            let mut cursor_col: usize = 0;
+
+            for (i, ch) in chars.iter().enumerate() {
+                if i == self.cursor {
+                    cursor_row = wrapped_lines.len() as u16;
+                    cursor_col = current_line.chars().count();
+                }
+                if current_line.chars().count() >= text_width {
+                    wrapped_lines.push(current_line.clone());
+                    current_line.clear();
+                }
+                current_line.push(*ch);
+            }
+            if self.cursor == chars.len() {
+                if current_line.chars().count() >= text_width {
+                    wrapped_lines.push(current_line.clone());
+                    current_line.clear();
+                    cursor_row = wrapped_lines.len() as u16;
+                    cursor_col = 0;
+                } else {
+                    cursor_row = wrapped_lines.len() as u16;
+                    cursor_col = current_line.chars().count();
+                }
+            }
+            if !current_line.is_empty() || chars.is_empty() {
+                wrapped_lines.push(current_line);
+            }
+
+            let mut lines: Vec<Line> = Vec::new();
+            for (i, line) in wrapped_lines.iter().enumerate() {
+                if i == 0 {
+                    lines.push(Line::from(vec![
+                        Span::styled("> ", prompt_style),
+                        Span::styled(line.clone(), Style::default()),
+                    ]));
+                } else {
+                    lines.push(Line::from(vec![
+                        Span::styled("  ", prompt_style),
+                        Span::styled(line.clone(), Style::default()),
+                    ]));
+                }
+            }
+            let paragraph = Paragraph::new(lines);
             frame.render_widget(paragraph, inner);
 
-            // Guard against the cursor rendering offscreen if the input exceeds terminal width
-            let cursor_x = (inner.x + 2 + self.cursor as u16).min(inner.right().saturating_sub(1));
-            let cursor_y = inner.y;
+            let cursor_x = inner.x + (prompt_width + cursor_col) as u16;
+            let cursor_y = inner.y + cursor_row;
             frame.set_cursor_position((cursor_x, cursor_y));
         }
     }
@@ -628,7 +688,6 @@ fn wrap_with_prefix(text: &str, prefix: &str, max_width: usize) -> Vec<String> {
         }
         
         let mut current = String::new();
-        // Uses split_inclusive to ensure original word spacing safely traverses lines.
         for word in line.split_inclusive(' ') {
             let word_len = word.chars().count();
             if current.chars().count() + word_len <= inner {
@@ -638,7 +697,22 @@ fn wrap_with_prefix(text: &str, prefix: &str, max_width: usize) -> Vec<String> {
                     out.push(format!("{}{}", prefix, current));
                     current.clear();
                 }
-                current.push_str(word);
+                if word_len <= inner {
+                    current.push_str(word);
+                } else {
+                    let mut remaining = word.chars().collect::<Vec<char>>();
+                    while !remaining.is_empty() {
+                        let space = inner - current.chars().count();
+                        let take = space.min(remaining.len());
+                        for ch in remaining.drain(..take) {
+                            current.push(ch);
+                        }
+                        if !remaining.is_empty() {
+                            out.push(format!("{}{}", prefix, current));
+                            current.clear();
+                        }
+                    }
+                }
             }
         }
         if !current.is_empty() {
