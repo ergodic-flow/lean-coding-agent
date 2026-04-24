@@ -95,6 +95,7 @@ pub struct StreamChunk {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct StreamChoice {
     pub delta: StreamDelta,
     pub finish_reason: Option<String>,
@@ -323,45 +324,7 @@ impl ApiClient {
                     }
                 }
 
-                if choice.finish_reason.as_deref() == Some("stop")
-                    || choice.finish_reason.as_deref() == Some("tool_calls")
-                {
-                    let msg = ResponseMessage {
-                        role: "assistant".to_string(),
-                        content: if content_acc.is_empty() {
-                            None
-                        } else {
-                            Some(content_acc.clone())
-                        },
-                        tool_calls: if tool_calls.is_empty() {
-                            None
-                        } else {
-                            Some(
-                                tool_calls
-                                    .iter()
-                                    .map(|(id, name, arguments)| ToolCall {
-                                        id: id.clone(),
-                                        call_type: "function".to_string(),
-                                        function: FunctionCall {
-                                            name: name.clone(),
-                                            arguments: arguments.clone(),
-                                        },
-                                    })
-                                    .collect(),
-                            )
-                        },
-                        reasoning_content: if reasoning_acc.is_empty() {
-                            None
-                        } else {
-                            Some(reasoning_acc.clone())
-                        },
-                    };
-                    on_event(StreamEvent::Done {
-                        message: msg,
-                        usage: None,
-                    })?;
-                    return Ok(());
-                }
+
             }
         }
 
