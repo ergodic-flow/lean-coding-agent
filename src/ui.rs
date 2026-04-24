@@ -92,8 +92,7 @@ impl App {
         let result = self.run_loop(&mut terminal);
 
         crossterm::terminal::disable_raw_mode().ok();
-        crossterm::execute!(terminal.backend_mut(), crossterm::terminal::LeaveAlternateScreen)
-            .ok();
+        crossterm::execute!(terminal.backend_mut(), crossterm::terminal::LeaveAlternateScreen).ok();
         terminal.show_cursor().ok();
 
         result
@@ -128,70 +127,36 @@ impl App {
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
+
+                let has_ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                let has_shift = key.modifiers.contains(KeyModifiers::SHIFT);
+                let no_mods = !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+
                 match key.code {
-                    KeyCode::Char('c')
-                        if key.modifiers.contains(KeyModifiers::CONTROL) =>
-                    {
-                        return Ok(());
+                    KeyCode::Char('c') if has_ctrl => return Ok(()),
+                    KeyCode::Char('a') if has_ctrl && !self.busy => self.cursor = 0,
+                    KeyCode::Char('e') if has_ctrl && !self.busy => {
+                        self.cursor = self.input.chars().count();
                     }
-                    KeyCode::Char('a')
-                        if key.modifiers.contains(KeyModifiers::CONTROL) =>
-                    {
-                        if !self.busy {
-                            self.cursor = 0;
-                        }
+                    KeyCode::Char('k') if has_ctrl && !self.busy => {
+                        let byte_pos = self.char_to_byte(self.cursor);
+                        self.input.truncate(byte_pos);
                     }
-                    KeyCode::Char('e')
-                        if key.modifiers.contains(KeyModifiers::CONTROL) =>
-                    {
-                        if !self.busy {
-                            self.cursor = self.input.chars().count();
-                        }
+                    KeyCode::Char('u') if has_ctrl && !self.busy => {
+                        let byte_pos = self.char_to_byte(self.cursor);
+                        self.input.drain(..byte_pos);
+                        self.cursor = 0;
                     }
-                    KeyCode::Char('k')
-                        if key.modifiers.contains(KeyModifiers::CONTROL) =>
-                    {
-                        if !self.busy {
-                            let byte_pos = self.char_to_byte(self.cursor);
-                            self.input.truncate(byte_pos);
-                        }
-                    }
-                    KeyCode::Char('u')
-                        if key.modifiers.contains(KeyModifiers::CONTROL) =>
-                    {
-                        if !self.busy {
-                            let byte_pos = self.char_to_byte(self.cursor);
-                            self.input = self.input[byte_pos..].to_string();
-                            self.cursor = 0;
-                        }
-                    }
-                    KeyCode::Char('w')
-                        if key.modifiers.contains(KeyModifiers::CONTROL) =>
-                    {
-                        if !self.busy {
-                            let chars: Vec<char> = self.input.chars().collect();
-                            let mut i = self.cursor;
-                            while i > 0 && chars[i - 1] == ' ' {
-                                i -= 1;
-                            }
-                            while i > 0 && chars[i - 1] != ' ' {
-                                i -= 1;
-                            }
-                            let byte_start = chars[..i]
-                                .iter()
-                                .map(|c| c.len_utf8())
-                                .sum();
-                            let byte_end = chars[..self.cursor]
-                                .iter()
-                                .map(|c| c.len_utf8())
-                                .sum();
-                            self.input = format!(
-                                "{}{}",
-                                &self.input[..byte_start],
-                                &self.input[byte_end..]
-                            );
-                            self.cursor = i;
-                        }
+                    KeyCode::Char('w') if has_ctrl && !self.busy && self.cursor > 0 => {
+                        let byte_cursor = self.char_to_byte(self.cursor);
+                        let left = &self.input[..byte_cursor];
+                        let trimmed = left.trim_end();
+                        let word_start = trimmed.rfind(char::is_whitespace).map(|i| i + 1).unwrap_or(0);
+                        let chars_to_remove = left[word_start..].chars().count();
+                        let byte_start = self.char_to_byte(self.cursor - chars_to_remove);
+                        
+                        self.input.drain(byte_start..byte_cursor);
+                        self.cursor -= chars_to_remove;
                     }
                     KeyCode::Enter => {
                         if !self.busy && !self.input.is_empty() {
@@ -202,18 +167,16 @@ impl App {
                             self.busy = true;
                             self.busy_since = Some(Instant::now());
                             self.auto_scroll = true;
-                            self.cmd_tx
-                                .send(AgentCommand::Send(msg))
-                                .map_err(|e| e.to_string())?;
+                            self.cmd_tx.send(AgentCommand::Send(msg)).map_err(|e| e.to_string())?;
                         }
                     }
-                    KeyCode::Char(ch) if !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
+                    KeyCode::Char(ch) if no_mods => {
                         if !self.busy {
                             self.insert_char(ch);
                         }
                     }
                     KeyCode::Backspace => {
-                        if !self.busy && self.cursor > 0 {
+                        if !self.busy {
                             self.delete_before_cursor();
                         }
                     }
@@ -228,11 +191,8 @@ impl App {
                         }
                     }
                     KeyCode::Right => {
-                        if !self.busy {
-                            let len = self.input.chars().count();
-                            if self.cursor < len {
-                                self.cursor += 1;
-                            }
+                        if !self.busy && self.cursor < self.input.chars().count() {
+                            self.cursor += 1;
                         }
                     }
                     KeyCode::Home => {
@@ -245,11 +205,11 @@ impl App {
                             self.cursor = self.input.chars().count();
                         }
                     }
-                    KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                    KeyCode::Up if has_shift => {
                         self.scroll_offset = self.scroll_offset.saturating_sub(3);
                         self.auto_scroll = false;
                     }
-                    KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                    KeyCode::Down if has_shift => {
                         self.scroll_offset = self.scroll_offset.saturating_add(3);
                     }
                     KeyCode::PageUp => {
@@ -396,30 +356,18 @@ impl App {
     }
 
     fn delete_before_cursor(&mut self) {
-        if self.cursor == 0 {
-            return;
+        if self.cursor > 0 {
+            let byte_pos = self.char_to_byte(self.cursor - 1);
+            self.input.remove(byte_pos);
+            self.cursor -= 1;
         }
-        let chars: Vec<char> = self.input.chars().collect();
-        let byte_pos: usize = chars[..self.cursor - 1]
-            .iter()
-            .map(|c| c.len_utf8())
-            .sum();
-        let byte_end = byte_pos + chars[self.cursor - 1].len_utf8();
-        self.input.drain(byte_pos..byte_end);
-        self.cursor -= 1;
     }
 
     fn delete_at_cursor(&mut self) {
-        let chars: Vec<char> = self.input.chars().collect();
-        if self.cursor >= chars.len() {
-            return;
+        if self.cursor < self.input.chars().count() {
+            let byte_pos = self.char_to_byte(self.cursor);
+            self.input.remove(byte_pos);
         }
-        let byte_pos: usize = chars[..self.cursor]
-            .iter()
-            .map(|c| c.len_utf8())
-            .sum();
-        let byte_end = byte_pos + chars[self.cursor].len_utf8();
-        self.input.drain(byte_pos..byte_end);
     }
 
     fn draw_header(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
@@ -487,10 +435,7 @@ impl App {
         let span_chars: usize = spans.iter().map(|s| s.content.chars().count()).sum();
         let pad = left_width as usize;
         if span_chars < pad {
-            spans.push(Span::styled(
-                " ".repeat(pad - span_chars),
-                base_style,
-            ));
+            spans.push(Span::styled(" ".repeat(pad - span_chars), base_style));
         }
 
         spans.push(Span::styled(ctx_pct, token_style));
@@ -512,9 +457,14 @@ impl App {
         self.scroll_offset = self.scroll_offset.min(max_scroll);
 
         let start = self.scroll_offset;
-        let end = (start + visible).min(total);
 
-        let mut visible_lines: Vec<Line<'_>> = all_lines[start..end].to_vec();
+        // Consuming iteration to avoid mass-cloning visual Strings on every render pass.
+        let mut visible_lines: Vec<Line<'_>> = all_lines
+            .into_iter()
+            .skip(start)
+            .take(visible)
+            .collect();
+            
         while visible_lines.len() < visible {
             visible_lines.push(Line::from(""));
         }
@@ -559,7 +509,8 @@ impl App {
             let paragraph = Paragraph::new(line);
             frame.render_widget(paragraph, inner);
 
-            let cursor_x = inner.x + 2 + self.cursor as u16;
+            // Guard against the cursor rendering offscreen if the input exceeds terminal width
+            let cursor_x = (inner.x + 2 + self.cursor as u16).min(inner.right().saturating_sub(1));
             let cursor_y = inner.y;
             frame.set_cursor_position((cursor_x, cursor_y));
         }
@@ -574,11 +525,9 @@ impl App {
                 ConversationItem::UserMessage(msg) => {
                     lines.push(Line::from(Span::styled(
                         " You",
-                        Style::default()
-                            .fg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD),
+                        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
                     )));
-                    for wrapped in wrap_lines(msg, 2, w) {
+                    for wrapped in wrap_with_prefix(msg, "  ", w) {
                         lines.push(Line::from(Span::styled(wrapped, Style::default().fg(Color::Cyan))));
                     }
                     lines.push(Line::from(""));
@@ -587,7 +536,7 @@ impl App {
                     let dim = Style::default().fg(Color::DarkGray);
                     let label = if *is_running { "  Thinking..." } else { "  Thought" };
                     lines.push(Line::from(Span::styled(label, dim)));
-                    for wrapped in wrap_lines(text, 2, w) {
+                    for wrapped in wrap_with_prefix(text, "  ", w) {
                         lines.push(Line::from(Span::styled(wrapped, dim)));
                     }
                     lines.push(Line::from(""));
@@ -595,11 +544,9 @@ impl App {
                 ConversationItem::AssistantText(msg) => {
                     lines.push(Line::from(Span::styled(
                         " Assistant",
-                        Style::default()
-                            .fg(Color::Green)
-                            .add_modifier(Modifier::BOLD),
+                        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
                     )));
-                    for wrapped in wrap_lines(msg, 2, w) {
+                    for wrapped in wrap_with_prefix(msg, "  ", w) {
                         lines.push(Line::from(wrapped));
                     }
                     lines.push(Line::from(""));
@@ -607,7 +554,7 @@ impl App {
                 ConversationItem::ResponseMeta { tokens, elapsed_secs, tok_per_sec } => {
                     let dim = Style::default().fg(Color::DarkGray);
                     let meta = format!("  {} tokens · {:.1} tok/s · {:.1}s", tokens, tok_per_sec, elapsed_secs);
-                    for wrapped in wrap_single(&meta, 0, w) {
+                    for wrapped in wrap_with_prefix(&meta, "", w) {
                         lines.push(Line::from(Span::styled(wrapped, dim)));
                     }
                     lines.push(Line::from(""));
@@ -618,24 +565,18 @@ impl App {
                     output,
                     is_running,
                 } => {
-                    let status = if *is_running {
-                        " ..."
-                    } else {
-                        ""
-                    };
+                    let status = if *is_running { " ..." } else { "" };
                     let header = format!(" [{}] {}{}", name, args_summary, status);
                     lines.push(Line::from(Span::styled(
                         header,
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD),
+                        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
                     )));
                     let dim = Style::default().fg(Color::DarkGray);
-                    for line in output.lines() {
-                        for wrapped in wrap_line_prefix(line, " │ ", w) {
-                            lines.push(Line::from(Span::styled(wrapped, dim)));
-                        }
+                    
+                    for wrapped in wrap_with_prefix(output, " │ ", w) {
+                        lines.push(Line::from(Span::styled(wrapped, dim)));
                     }
+
                     if !output.is_empty() {
                         lines.push(Line::from(Span::styled(" └", dim)));
                     }
@@ -643,14 +584,13 @@ impl App {
                 }
                 ConversationItem::Error(msg) => {
                     let err = format!(" Error: {}", msg);
-                    for wrapped in wrap_single(&err, 0, w) {
+                    for wrapped in wrap_with_prefix(&err, "", w) {
                         lines.push(Line::from(Span::styled(wrapped, Style::default().fg(Color::Red))));
                     }
                     lines.push(Line::from(""));
                 }
             }
         }
-
         lines
     }
 }
@@ -665,86 +605,50 @@ fn format_tokens(n: u64) -> String {
     }
 }
 
-fn wrap_lines(text: &str, indent: usize, max_width: usize) -> Vec<String> {
+/// Consolidates lines wrapping mechanisms seamlessly keeping spaces.
+fn wrap_with_prefix(text: &str, prefix: &str, max_width: usize) -> Vec<String> {
     let mut out = Vec::new();
-    let inner = max_width.saturating_sub(indent);
-    for line in text.lines() {
-        if inner == 0 || line.chars().count() <= inner {
-            out.push(format!("{}{}", " ".repeat(indent), line));
-        } else {
-            let mut current = String::new();
-            for word in line.split_whitespace() {
-                if current.is_empty() {
-                    current = word.to_string();
-                } else if current.chars().count() + 1 + word.chars().count() <= inner {
-                    current.push(' ');
-                    current.push_str(word);
-                } else {
-                    out.push(format!("{}{}", " ".repeat(indent), current));
-                    current = word.to_string();
-                }
-            }
-            if !current.is_empty() {
-                out.push(format!("{}{}", " ".repeat(indent), current));
-            }
-        }
-    }
-    if out.is_empty() {
-        out.push(" ".repeat(indent));
-    }
-    out
-}
-
-fn wrap_single(line: &str, indent: usize, max_width: usize) -> Vec<String> {
-    let inner = max_width.saturating_sub(indent);
-    if inner == 0 || line.chars().count() <= max_width {
-        return vec![line.to_string()];
-    }
-    let indent_str = " ".repeat(indent);
-    let content = line.trim_start();
-    let mut out = Vec::new();
-    let mut current = String::new();
-    for word in content.split_whitespace() {
-        if current.is_empty() {
-            current = word.to_string();
-        } else if current.chars().count() + 1 + word.chars().count() <= inner {
-            current.push(' ');
-            current.push_str(word);
-        } else {
-            out.push(format!("{}{}", indent_str, current));
-            current = word.to_string();
-        }
-    }
-    if !current.is_empty() {
-        out.push(format!("{}{}", indent_str, current));
-    }
-    if out.is_empty() {
-        out.push(line.to_string());
-    }
-    out
-}
-
-fn wrap_line_prefix(line: &str, prefix: &str, max_width: usize) -> Vec<String> {
     let prefix_len = prefix.chars().count();
     let inner = max_width.saturating_sub(prefix_len);
-    if inner == 0 || line.chars().count() <= inner {
-        return vec![format!("{}{}", prefix, line)];
+
+    if inner == 0 || text.is_empty() {
+        for _ in text.lines() {
+            out.push(prefix.to_string());
+        }
+        if out.is_empty() {
+            out.push(prefix.to_string());
+        }
+        return out;
     }
-    let mut out = Vec::new();
-    let mut current = String::new();
-    for word in line.split_whitespace() {
-        if current.is_empty() {
-            current = word.to_string();
-        } else if current.chars().count() + 1 + word.chars().count() <= inner {
-            current.push(' ');
-            current.push_str(word);
-        } else {
+
+    for line in text.lines() {
+        if line.is_empty() {
+            out.push(prefix.to_string());
+            continue;
+        }
+        
+        let mut current = String::new();
+        // Uses split_inclusive to ensure original word spacing safely traverses lines.
+        for word in line.split_inclusive(' ') {
+            let word_len = word.chars().count();
+            if current.chars().count() + word_len <= inner {
+                current.push_str(word);
+            } else {
+                if !current.is_empty() {
+                    out.push(format!("{}{}", prefix, current));
+                    current.clear();
+                }
+                current.push_str(word);
+            }
+        }
+        if !current.is_empty() {
             out.push(format!("{}{}", prefix, current));
-            current = word.to_string();
         }
     }
-    if !current.is_empty() {
-        out.push(format!("{}{}", prefix, current));
+    
+    if out.is_empty() {
+        out.push(prefix.to_string());
     }
+    
     out
 }
