@@ -20,6 +20,7 @@ struct Config {
     system_prompt: Option<String>,
     plugins: Option<String>,
     context_limit: Option<u64>,
+    provider: Option<String>,
 }
 
 fn load_config() -> Config {
@@ -68,6 +69,10 @@ struct Args {
     /// Model context window size in tokens (for context usage display)
     #[arg(long)]
     context_limit: Option<u64>,
+
+    /// Provider name to route through (e.g. "Together")
+    #[arg(long)]
+    provider: Option<String>,
 }
 
 fn resolve(args: Args) -> Resolved {
@@ -84,6 +89,8 @@ fn resolve(args: Args) -> Resolved {
     let plugins = args.plugins.or(cfg.plugins);
     let context_limit = args.context_limit.or(cfg.context_limit).unwrap_or(128000);
 
+    let provider = args.provider.or(cfg.provider);
+
     Resolved {
         api_url,
         model,
@@ -91,6 +98,7 @@ fn resolve(args: Args) -> Resolved {
         system_prompt,
         plugins,
         context_limit,
+        provider,
     }
 }
 
@@ -101,6 +109,7 @@ struct Resolved {
     system_prompt: Option<String>,
     plugins: Option<String>,
     context_limit: u64,
+    provider: Option<String>,
 }
 
 fn main() {
@@ -114,10 +123,11 @@ fn main() {
     let model = r.model.clone();
     let system_prompt = r.system_prompt.clone();
     let plugin_dir = r.plugins.clone();
+    let provider = r.provider.clone();
     let cancel = std::sync::Arc::new(AtomicBool::new(false));
     let cancel_agent = cancel.clone();
     std::thread::spawn(move || {
-        agent::run(client, model, system_prompt, plugin_dir, cancel_agent, cmd_rx, ui_tx);
+        agent::run(client, model, system_prompt, plugin_dir, provider, cancel_agent, cmd_rx, ui_tx);
     });
 
     let mut app = ui::App::new(r.model, r.context_limit, cancel, cmd_tx, ui_rx);

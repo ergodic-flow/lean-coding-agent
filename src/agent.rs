@@ -44,6 +44,7 @@ pub fn run(
     model: String,
     system_prompt: Option<String>,
     plugin_dir: Option<String>,
+    provider: Option<String>,
     cancel: Arc<AtomicBool>,
     cmd_rx: mpsc::Receiver<AgentCommand>,
     ui_tx: mpsc::Sender<UiEvent>,
@@ -83,7 +84,7 @@ pub fn run(
         match cmd {
             AgentCommand::Send(input) => {
                 messages.push(Message::User { content: input });
-                if let Err(e) = agent_loop(&client, &model, &mut messages, &all_tools, &plugins, &cancel, &ui_tx) {
+                if let Err(e) = agent_loop(&client, &model, &provider, &mut messages, &all_tools, &plugins, &cancel, &ui_tx) {
                     let _ = ui_tx.send(UiEvent::Error(e));
                 }
                 let _ = ui_tx.send(UiEvent::Done);
@@ -95,6 +96,7 @@ pub fn run(
 fn agent_loop(
     client: &api::ApiClient,
     model: &str,
+    provider: &Option<String>,
     messages: &mut Vec<Message>,
     tool_defs: &[api::ToolDef],
     plugins: &PluginManager,
@@ -112,6 +114,7 @@ fn agent_loop(
             stream: true,
             tools: Some(tool_defs.to_vec()),
             stream_options: Some(StreamOptions { include_usage: true }),
+            provider: provider.clone(),
         };
 
         let start = Instant::now();

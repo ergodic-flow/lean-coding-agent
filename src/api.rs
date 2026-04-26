@@ -1,6 +1,19 @@
 use std::io::Read;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
+
+fn serialize_provider<S: Serializer>(val: &Option<String>, s: S) -> Result<S::Ok, S::Error> {
+    match val {
+        Some(name) => {
+            #[derive(Serialize)]
+            struct ProviderPayload {
+                order: Vec<String>,
+            }
+            s.serialize_some(&ProviderPayload { order: vec![name.clone()] })
+        }
+        None => s.serialize_none(),
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ChatRequest {
@@ -11,6 +24,11 @@ pub struct ChatRequest {
     pub tools: Option<Vec<ToolDef>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream_options: Option<StreamOptions>,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_provider"
+    )]
+    pub provider: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
