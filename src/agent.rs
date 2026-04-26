@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::Instant;
 
-use crate::api::{self, ChatRequest, Message, StreamOptions};
+use crate::api::{self, ChatRequest, ContentPart, ImageUrlData, Message, StreamOptions, UserContent};
 use crate::plugins::PluginManager;
 use crate::tools;
 
@@ -21,8 +21,14 @@ by reading, writing, and editing files, and running shell commands.
 const MAX_TOOL_ITERATIONS: usize = 50;
 const MAX_TOOL_OUTPUT: usize = 50_000;
 
+pub struct ImageAttachment {
+    pub filename: String,
+    pub base64_data: String,
+    pub media_type: String,
+}
+
 pub enum AgentCommand {
-    Send(String),
+    Send { text: String, images: Vec<ImageAttachment> },
 }
 
 pub enum UiEvent {
@@ -83,8 +89,24 @@ pub fn run(
         };
 
         match cmd {
-            AgentCommand::Send(input) => {
-                messages.push(Message::User { content: input });
+            AgentCommand::Send { text, images } => {
+                let content = if images.is_empty() {
+                    UserContent::Text(text.clone())
+                } else {
+                    let mut parts = Vec::new();
+                    if !text.is_empty() {
+                        parts.push(ContentPart::Text { text: text.clone() });
+                    }
+                    for img in &images {
+                        parts.push(ContentPart::ImageUrl {
+                            image_url: ImageUrlData {
+                                url: format!("data:{};base64,{}", img.media_type, img.base64_data),
+                            },
+                        });
+                    }
+                    UserContent::Multimodal(parts)
+                };
+                messages.push(Message::User { content });
                 if let Err(e) = agent_loop(&client, &model, &provider, &mut messages, &all_tools, &plugins, &cancel, &ui_tx) {
                     let _ = ui_tx.send(UiEvent::Error(e));
                 }

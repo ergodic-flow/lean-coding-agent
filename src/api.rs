@@ -37,12 +37,31 @@ pub struct StreamOptions {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum UserContent {
+    Text(String),
+    Multimodal(Vec<ContentPart>),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ContentPart {
+    Text { text: String },
+    ImageUrl { image_url: ImageUrlData },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageUrlData {
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 #[serde(tag = "role")]
 pub enum Message {
     #[serde(rename = "system")]
     System { content: String },
     #[serde(rename = "user")]
-    User { content: String },
+    User { content: UserContent },
     #[serde(rename = "assistant")]
     Assistant {
         #[serde(skip_serializing_if = "Option::is_none")]

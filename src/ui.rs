@@ -19,7 +19,7 @@ const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦
 const SPINNER_INTERVAL_MS: u64 = 80;
 
 enum ConversationItem {
-    UserMessage(String),
+    UserMessage { text: String, images: Vec<String> },
     Thinking { text: String, is_running: bool },
     AssistantText(String),
     ResponseMeta { tokens: u64, elapsed_secs: f64, tok_per_sec: f64 },
@@ -30,6 +30,12 @@ enum ConversationItem {
         is_running: bool,
     },
     Error(String),
+}
+
+struct ImageAttachment {
+    filename: String,
+    base64_data: String,
+    media_type: String,
 }
 
 pub struct App {
@@ -47,6 +53,7 @@ pub struct App {
     plugin_count: usize,
     pending_cancel: bool,
     esc_press_time: Option<Instant>,
+    pending_images: Vec<ImageAttachment>,
     cancel: Arc<AtomicBool>,
     cmd_tx: mpsc::Sender<AgentCommand>,
     ui_rx: mpsc::Receiver<UiEvent>,
@@ -75,6 +82,7 @@ impl App {
             plugin_count: 0,
             pending_cancel: false,
             esc_press_time: None,
+            pending_images: Vec::new(),
             cancel,
             cmd_tx,
             ui_rx,
@@ -86,12 +94,15 @@ impl App {
         let mut stdout = std::io::stdout();
         crossterm::execute!(stdout, crossterm::terminal::EnterAlternateScreen)
             .map_err(|e| e.to_string())?;
+        crossterm::execute!(stdout, crossterm::event::EnableBracketedPaste)
+            .map_err(|e| e.to_string())?;
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend).map_err(|e| e.to_string())?;
 
         let result = self.run_loop(&mut terminal);
 
         crossterm::terminal::disable_raw_mode().ok();
+        crossterm::execute!(terminal.backend_mut(), crossterm::event::DisableBracketedPaste).ok();
         crossterm::execute!(terminal.backend_mut(), crossterm::terminal::LeaveAlternateScreen).ok();
         terminal.show_cursor().ok();
 
@@ -123,116 +134,185 @@ impl App {
             }
 
             let ev = event::read().map_err(|e| e.to_string())?;
-            if let Event::Key(key) = ev {
-                if key.kind != KeyEventKind::Press {
-                    continue;
-                }
+            match ev {
+                Event::Key(key) => {
+                    if key.kind != KeyEventKind::Press {
+                        continue;
+                    }
 
-                let has_ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-                let has_shift = key.modifiers.contains(KeyModifiers::SHIFT);
-                let no_mods = !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+                    let has_ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                    let has_shift = key.modifiers.contains(KeyModifiers::SHIFT);
+                    let no_mods = !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
 
-                match key.code {
-                    KeyCode::Char('c') if has_ctrl => return Ok(()),
-                    KeyCode::Char('a') if has_ctrl && !self.busy => self.cursor = 0,
-                    KeyCode::Char('e') if has_ctrl && !self.busy => {
-                        self.cursor = self.input.chars().count();
-                    }
-                    KeyCode::Char('k') if has_ctrl && !self.busy => {
-                        let byte_pos = self.char_to_byte(self.cursor);
-                        self.input.truncate(byte_pos);
-                    }
-                    KeyCode::Char('u') if has_ctrl && !self.busy => {
-                        let byte_pos = self.char_to_byte(self.cursor);
-                        self.input.drain(..byte_pos);
-                        self.cursor = 0;
-                    }
-                    KeyCode::Char('w') if has_ctrl && !self.busy && self.cursor > 0 => {
-                        let byte_cursor = self.char_to_byte(self.cursor);
-                        let left = &self.input[..byte_cursor];
-                        let trimmed = left.trim_end();
-                        let word_start = trimmed.rfind(char::is_whitespace).map(|i| i + 1).unwrap_or(0);
-                        let chars_to_remove = left[word_start..].chars().count();
-                        let byte_start = self.char_to_byte(self.cursor - chars_to_remove);
-                        
-                        self.input.drain(byte_start..byte_cursor);
-                        self.cursor -= chars_to_remove;
-                    }
-                    KeyCode::Enter => {
-                        if !self.busy && !self.input.is_empty() {
-                            let msg = self.input.clone();
-                            self.input.clear();
-                            self.cursor = 0;
-                            self.items.push(ConversationItem::UserMessage(msg.clone()));
-                            self.busy = true;
-                            self.busy_since = Some(Instant::now());
-                            self.auto_scroll = true;
-                            self.cmd_tx.send(AgentCommand::Send(msg)).map_err(|e| e.to_string())?;
-                        }
-                    }
-                    KeyCode::Char(ch) if no_mods => {
-                        if !self.busy {
-                            self.insert_char(ch);
-                        }
-                    }
-                    KeyCode::Backspace => {
-                        if !self.busy {
-                            self.delete_before_cursor();
-                        }
-                    }
-                    KeyCode::Delete => {
-                        if !self.busy {
-                            self.delete_at_cursor();
-                        }
-                    }
-                    KeyCode::Left => {
-                        if !self.busy && self.cursor > 0 {
-                            self.cursor -= 1;
-                        }
-                    }
-                    KeyCode::Right => {
-                        if !self.busy && self.cursor < self.input.chars().count() {
-                            self.cursor += 1;
-                        }
-                    }
-                    KeyCode::Home => {
-                        if !self.busy {
-                            self.cursor = 0;
-                        }
-                    }
-                    KeyCode::End => {
-                        if !self.busy {
+                    match key.code {
+                        KeyCode::Char('c') if has_ctrl => return Ok(()),
+                        KeyCode::Char('a') if has_ctrl && !self.busy => self.cursor = 0,
+                        KeyCode::Char('e') if has_ctrl && !self.busy => {
                             self.cursor = self.input.chars().count();
                         }
+                        KeyCode::Char('k') if has_ctrl && !self.busy => {
+                            let byte_pos = self.char_to_byte(self.cursor);
+                            self.input.truncate(byte_pos);
+                        }
+                        KeyCode::Char('u') if has_ctrl && !self.busy => {
+                            let byte_pos = self.char_to_byte(self.cursor);
+                            self.input.drain(..byte_pos);
+                            self.cursor = 0;
+                        }
+                        KeyCode::Char('w') if has_ctrl && !self.busy && self.cursor > 0 => {
+                            let byte_cursor = self.char_to_byte(self.cursor);
+                            let left = &self.input[..byte_cursor];
+                            let trimmed = left.trim_end();
+                            let word_start = trimmed.rfind(char::is_whitespace).map(|i| i + 1).unwrap_or(0);
+                            let chars_to_remove = left[word_start..].chars().count();
+                            let byte_start = self.char_to_byte(self.cursor - chars_to_remove);
+                            
+                            self.input.drain(byte_start..byte_cursor);
+                            self.cursor -= chars_to_remove;
+                        }
+                        KeyCode::Char('d') if has_ctrl && !self.busy => {
+                            self.pending_images.clear();
+                        }
+                        KeyCode::Enter => {
+                            if !self.busy && (!self.input.is_empty() || !self.pending_images.is_empty()) {
+                                let msg = self.input.clone();
+                                let images = std::mem::take(&mut self.pending_images);
+                                let image_names: Vec<String> = images.iter().map(|i| i.filename.clone()).collect();
+                                self.input.clear();
+                                self.cursor = 0;
+                                self.items.push(ConversationItem::UserMessage {
+                                    text: msg.clone(),
+                                    images: image_names,
+                                });
+                                self.busy = true;
+                                self.busy_since = Some(Instant::now());
+                                self.auto_scroll = true;
+                                self.cmd_tx
+                                    .send(AgentCommand::Send {
+                                        text: msg,
+                                        images: images
+                                            .into_iter()
+                                            .map(|a| crate::agent::ImageAttachment {
+                                                filename: a.filename,
+                                                base64_data: a.base64_data,
+                                                media_type: a.media_type,
+                                            })
+                                            .collect(),
+                                    })
+                                    .map_err(|e| e.to_string())?;
+                            }
+                        }
+                        KeyCode::Char(ch) if no_mods => {
+                            if !self.busy {
+                                self.insert_char(ch);
+                            }
+                        }
+                        KeyCode::Backspace => {
+                            if !self.busy {
+                                if self.input.is_empty() && !self.pending_images.is_empty() {
+                                    self.pending_images.pop();
+                                } else {
+                                    self.delete_before_cursor();
+                                }
+                            }
+                        }
+                        KeyCode::Delete => {
+                            if !self.busy {
+                                self.delete_at_cursor();
+                            }
+                        }
+                        KeyCode::Left => {
+                            if !self.busy && self.cursor > 0 {
+                                self.cursor -= 1;
+                            }
+                        }
+                        KeyCode::Right => {
+                            if !self.busy && self.cursor < self.input.chars().count() {
+                                self.cursor += 1;
+                            }
+                        }
+                        KeyCode::Home => {
+                            if !self.busy {
+                                self.cursor = 0;
+                            }
+                        }
+                        KeyCode::End => {
+                            if !self.busy {
+                                self.cursor = self.input.chars().count();
+                            }
+                        }
+                        KeyCode::Up if has_shift => {
+                            self.scroll_offset = self.scroll_offset.saturating_sub(3);
+                            self.auto_scroll = false;
+                        }
+                        KeyCode::Down if has_shift => {
+                            self.scroll_offset = self.scroll_offset.saturating_add(3);
+                        }
+                        KeyCode::PageUp => {
+                            self.scroll_offset = self.scroll_offset.saturating_sub(20);
+                            self.auto_scroll = false;
+                        }
+                        KeyCode::PageDown => {
+                            self.scroll_offset = self.scroll_offset.saturating_add(20);
+                        }
+                        KeyCode::Esc => {
+                            if self.busy {
+                                if self.pending_cancel {
+                                    self.cancel.store(true, Ordering::Relaxed);
+                                    self.pending_cancel = false;
+                                    self.esc_press_time = None;
+                                } else {
+                                    self.pending_cancel = true;
+                                    self.esc_press_time = Some(Instant::now());
+                                }
+                            }
+                        }
+                        _ => {}
                     }
-                    KeyCode::Up if has_shift => {
-                        self.scroll_offset = self.scroll_offset.saturating_sub(3);
-                        self.auto_scroll = false;
-                    }
-                    KeyCode::Down if has_shift => {
-                        self.scroll_offset = self.scroll_offset.saturating_add(3);
-                    }
-                    KeyCode::PageUp => {
-                        self.scroll_offset = self.scroll_offset.saturating_sub(20);
-                        self.auto_scroll = false;
-                    }
-                    KeyCode::PageDown => {
-                        self.scroll_offset = self.scroll_offset.saturating_add(20);
-                    }
-                    KeyCode::Esc => {
-                        if self.busy {
-                            if self.pending_cancel {
-                                self.cancel.store(true, Ordering::Relaxed);
-                                self.pending_cancel = false;
-                                self.esc_press_time = None;
-                            } else {
-                                self.pending_cancel = true;
-                                self.esc_press_time = Some(Instant::now());
+                }
+                Event::Paste(text) => {
+                    if !self.busy {
+                        let trimmed = text.trim();
+                        let path = trimmed
+                            .trim_start_matches("file://")
+                            .trim_matches('"')
+                            .trim_matches('\'');
+
+                        if is_image_file(path) && std::path::Path::new(path).is_file() {
+                            match std::fs::read(path) {
+                                Ok(data) => {
+                                    if data.len() > 20 * 1024 * 1024 {
+                                        self.items.push(ConversationItem::Error(
+                                            "Image too large (max 20MB)".to_string(),
+                                        ));
+                                    } else {
+                                        let filename = std::path::Path::new(path)
+                                            .file_name()
+                                            .map(|f| f.to_string_lossy().to_string())
+                                            .unwrap_or_else(|| path.to_string());
+                                        let media_type = media_type_for_path(path).to_string();
+                                        let base64_data = base64_encode(&data);
+                                        self.pending_images.push(ImageAttachment {
+                                            filename,
+                                            base64_data,
+                                            media_type,
+                                        });
+                                    }
+                                }
+                                Err(e) => {
+                                    self.items.push(ConversationItem::Error(
+                                        format!("Failed to read image: {}", e),
+                                    ));
+                                }
+                            }
+                        } else {
+                            for ch in text.chars() {
+                                self.insert_char(ch);
                             }
                         }
                     }
-                    _ => {}
                 }
+                _ => {}
             }
         }
     }
@@ -325,17 +405,21 @@ impl App {
     }
 
     fn input_height(&self, terminal_width: u16) -> u16 {
-        if self.input.is_empty() || self.busy {
-            return 3;
-        }
-        let prompt_width: usize = 2;
-        let inner_width = (terminal_width as usize).saturating_sub(2).saturating_sub(prompt_width);
-        if inner_width == 0 {
-            return 3;
-        }
-        let chars_len = self.input.chars().count();
-        let lines = (chars_len + inner_width - 1) / inner_width;
-        (lines as u16).saturating_add(2).min(10)
+        let base = if self.input.is_empty() || self.busy {
+            3u16
+        } else {
+            let prompt_width: usize = 2;
+            let inner_width = (terminal_width as usize).saturating_sub(2).saturating_sub(prompt_width);
+            if inner_width == 0 {
+                3u16
+            } else {
+                let chars_len = self.input.chars().count();
+                let lines = (chars_len + inner_width - 1) / inner_width;
+                (lines as u16).saturating_add(2)
+            }
+        };
+        let attachment_lines = if self.pending_images.is_empty() { 0u16 } else { 1 };
+        base.saturating_add(attachment_lines).min(12)
     }
 
     fn draw(&mut self, frame: &mut Frame) {
@@ -504,6 +588,28 @@ impl App {
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
+        let has_attachments = !self.pending_images.is_empty() && !self.busy;
+
+        let (input_area, attachment_area) = if has_attachments {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(1), Constraint::Min(0)])
+                .split(inner);
+            (chunks[1], Some(chunks[0]))
+        } else {
+            (inner, None)
+        };
+
+        if let Some(a_area) = attachment_area {
+            let names: Vec<&str> = self.pending_images.iter().map(|a| a.filename.as_str()).collect();
+            let label = format!(" [attached: {}]  Ctrl+D clear | Backspace remove last", names.join(", "));
+            let paragraph = Paragraph::new(Line::from(Span::styled(
+                label,
+                Style::default().fg(Color::Magenta),
+            )));
+            frame.render_widget(paragraph, a_area);
+        }
+
         if self.busy {
             let s = self.spinner();
             let cancel_hint = if self.pending_cancel {
@@ -520,14 +626,14 @@ impl App {
                 Span::styled(cancel_hint, Style::default().fg(Color::DarkGray)),
             ]);
             let paragraph = Paragraph::new(line);
-            frame.render_widget(paragraph, inner);
+            frame.render_widget(paragraph, input_area);
         } else {
             let prompt_style = Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD);
 
             let prompt_width: usize = 2;
-            let inner_width = inner.width as usize;
+            let inner_width = input_area.width as usize;
             let text_width = inner_width.saturating_sub(prompt_width).max(1);
 
             let chars: Vec<char> = self.input.chars().collect();
@@ -577,10 +683,10 @@ impl App {
                 }
             }
             let paragraph = Paragraph::new(lines);
-            frame.render_widget(paragraph, inner);
+            frame.render_widget(paragraph, input_area);
 
-            let cursor_x = inner.x + (prompt_width + cursor_col) as u16;
-            let cursor_y = inner.y + cursor_row;
+            let cursor_x = input_area.x + (prompt_width + cursor_col) as u16;
+            let cursor_y = input_area.y + cursor_row;
             frame.set_cursor_position((cursor_x, cursor_y));
         }
     }
@@ -591,12 +697,18 @@ impl App {
 
         for item in &self.items {
             match item {
-                ConversationItem::UserMessage(msg) => {
+                ConversationItem::UserMessage { text, images } => {
                     lines.push(Line::from(Span::styled(
                         " You",
                         Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
                     )));
-                    for wrapped in wrap_with_prefix(msg, "  ", w) {
+                    for img in images {
+                        lines.push(Line::from(Span::styled(
+                            format!("  [img: {}]", img),
+                            Style::default().fg(Color::Magenta),
+                        )));
+                    }
+                    for wrapped in wrap_with_prefix(text, "  ", w) {
                         lines.push(Line::from(Span::styled(wrapped, Style::default().fg(Color::Cyan))));
                     }
                     lines.push(Line::from(""));
@@ -742,4 +854,55 @@ fn wrap_with_prefix(text: &str, prefix: &str, max_width: usize) -> Vec<String> {
     }
     
     out
+}
+
+const BASE64_CHARS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+fn base64_encode(data: &[u8]) -> String {
+    let mut result = String::with_capacity((data.len() + 2) / 3 * 4);
+    for chunk in data.chunks(3) {
+        let n = match chunk.len() {
+            1 => (chunk[0] as u32) << 16,
+            2 => (chunk[0] as u32) << 16 | (chunk[1] as u32) << 8,
+            _ => (chunk[0] as u32) << 16 | (chunk[1] as u32) << 8 | chunk[2] as u32,
+        };
+        result.push(BASE64_CHARS[((n >> 18) & 0x3F) as usize] as char);
+        result.push(BASE64_CHARS[((n >> 12) & 0x3F) as usize] as char);
+        if chunk.len() > 1 {
+            result.push(BASE64_CHARS[((n >> 6) & 0x3F) as usize] as char);
+        } else {
+            result.push('=');
+        }
+        if chunk.len() > 2 {
+            result.push(BASE64_CHARS[(n & 0x3F) as usize] as char);
+        } else {
+            result.push('=');
+        }
+    }
+    result
+}
+
+fn is_image_file(path: &str) -> bool {
+    let lower = path.to_lowercase();
+    lower.ends_with(".png")
+        || lower.ends_with(".jpg")
+        || lower.ends_with(".jpeg")
+        || lower.ends_with(".gif")
+        || lower.ends_with(".webp")
+        || lower.ends_with(".bmp")
+}
+
+fn media_type_for_path(path: &str) -> &'static str {
+    let lower = path.to_lowercase();
+    if lower.ends_with(".png") {
+        "image/png"
+    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+        "image/jpeg"
+    } else if lower.ends_with(".gif") {
+        "image/gif"
+    } else if lower.ends_with(".webp") {
+        "image/webp"
+    } else {
+        "image/bmp"
+    }
 }
