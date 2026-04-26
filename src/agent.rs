@@ -31,7 +31,8 @@ pub enum UiEvent {
     ThinkingDelta(String),
     TextStart,
     TextDelta(String),
-    ToolCall { name: String, args_summary: String },
+    ToolCallBegin { name: String },
+    ToolCallArgs { args_summary: String },
     ToolResult { output_summary: String },
     TokenUsage { context: u64, output: u64 },
     ResponseMeta { tokens: u64, elapsed_secs: f64, tok_per_sec: f64 },
@@ -154,7 +155,8 @@ fn agent_loop(
                         tool_call_names.push(String::new());
                     }
                     tool_call_ids[index] = id;
-                    tool_call_names[index] = name;
+                    tool_call_names[index] = name.clone();
+                    let _ = ui_tx.send(UiEvent::ToolCallBegin { name });
                     Ok(())
                 }
                 api::StreamEvent::ToolCallDelta { .. } => Ok(()),
@@ -194,8 +196,7 @@ fn agent_loop(
                                 serde_json::from_str(&tc.function.arguments).unwrap_or_default();
 
                             let args_summary = summarize_args(&tc.function.name, &args);
-                            let _ = ui_tx.send(UiEvent::ToolCall {
-                                name: tc.function.name.clone(),
+                            let _ = ui_tx.send(UiEvent::ToolCallArgs {
                                 args_summary,
                             });
 

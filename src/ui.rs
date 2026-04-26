@@ -25,7 +25,7 @@ enum ConversationItem {
     ResponseMeta { tokens: u64, elapsed_secs: f64, tok_per_sec: f64 },
     ToolBlock {
         name: String,
-        args_summary: String,
+        args_summary: Option<String>,
         output: String,
         is_running: bool,
     },
@@ -262,14 +262,23 @@ impl App {
                     s.push_str(&text);
                 }
             }
-            UiEvent::ToolCall { name, args_summary } => {
+            UiEvent::ToolCallBegin { name } => {
                 self.end_active_thinking();
                 self.items.push(ConversationItem::ToolBlock {
                     name,
-                    args_summary,
+                    args_summary: None,
                     output: String::new(),
                     is_running: true,
                 });
+            }
+            UiEvent::ToolCallArgs { args_summary } => {
+                if let Some(ConversationItem::ToolBlock {
+                    args_summary: ref mut summary,
+                    ..
+                }) = self.items.last_mut()
+                {
+                    *summary = Some(args_summary);
+                }
             }
             UiEvent::ToolResult { output_summary } => {
                 if let Some(ConversationItem::ToolBlock {
@@ -625,8 +634,16 @@ impl App {
                     output,
                     is_running,
                 } => {
-                    let status = if *is_running { " ..." } else { "" };
-                    let header = format!(" [{}] {}{}", name, args_summary, status);
+                    let spinner = if *is_running {
+                        format!(" {} {}", self.spinner(), "running...")
+                    } else {
+                        String::new()
+                    };
+                    let args_display = match args_summary {
+                        Some(a) if !a.is_empty() => format!(" {}", a),
+                        _ => String::new(),
+                    };
+                    let header = format!(" [{}]{}{}", name, args_display, spinner);
                     lines.push(Line::from(Span::styled(
                         header,
                         Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
