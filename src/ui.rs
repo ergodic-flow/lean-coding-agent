@@ -3,7 +3,10 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Instant;
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, Event, KeyCode, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+};
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
@@ -96,12 +99,18 @@ impl App {
             .map_err(|e| e.to_string())?;
         crossterm::execute!(stdout, crossterm::event::EnableBracketedPaste)
             .map_err(|e| e.to_string())?;
+        crossterm::execute!(
+            stdout,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        )
+        .map_err(|e| e.to_string())?;
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend).map_err(|e| e.to_string())?;
 
         let result = self.run_loop(&mut terminal);
 
         crossterm::terminal::disable_raw_mode().ok();
+        crossterm::execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags).ok();
         crossterm::execute!(terminal.backend_mut(), crossterm::event::DisableBracketedPaste).ok();
         crossterm::execute!(terminal.backend_mut(), crossterm::terminal::LeaveAlternateScreen).ok();
         terminal.show_cursor().ok();
@@ -172,6 +181,11 @@ impl App {
                         }
                         KeyCode::Char('d') if has_ctrl && !self.busy => {
                             self.pending_images.clear();
+                        }
+                        KeyCode::Enter if has_shift => {
+                            if !self.busy {
+                                self.insert_char('\n');
+                            }
                         }
                         KeyCode::Enter => {
                             if !self.busy && (!self.input.is_empty() || !self.pending_images.is_empty()) {
@@ -413,8 +427,8 @@ impl App {
             if inner_width == 0 {
                 3u16
             } else {
-                let chars_len = self.input.chars().count();
-                let lines = (chars_len + inner_width - 1) / inner_width;
+                let (wrapped_lines, _, _) = self.wrap_input_lines(inner_width);
+                let lines = wrapped_lines.len();
                 (lines as u16).saturating_add(2)
             }
         };
@@ -478,6 +492,49 @@ impl App {
         }
     }
 
+    fn wrap_input_lines(&self, text_width: usize) -> (Vec<String>, u16, usize) {
+        let text_width = text_width.max(1);
+        let chars: Vec<char> = self.input.chars().collect();
+        let mut wrapped_lines: Vec<String> = Vec::new();
+        let mut current_line = String::new();
+        let mut cursor_row: u16 = 0;
+        let mut cursor_col: usize = 0;
+
+        for (i, ch) in chars.iter().enumerate() {
+            if *ch != '\n' && current_line.chars().count() >= text_width {
+                wrapped_lines.push(std::mem::take(&mut current_line));
+            }
+
+            if i == self.cursor {
+                cursor_row = wrapped_lines.len() as u16;
+                cursor_col = current_line.chars().count();
+            }
+
+            if *ch == '\n' {
+                wrapped_lines.push(std::mem::take(&mut current_line));
+            } else {
+                current_line.push(*ch);
+            }
+        }
+
+        if self.cursor == chars.len() {
+            if current_line.chars().count() >= text_width {
+                wrapped_lines.push(std::mem::take(&mut current_line));
+                cursor_row = wrapped_lines.len() as u16;
+                cursor_col = 0;
+            } else {
+                cursor_row = wrapped_lines.len() as u16;
+                cursor_col = current_line.chars().count();
+            }
+        }
+
+        if !current_line.is_empty() || chars.is_empty() || self.input.ends_with('\n') {
+            wrapped_lines.push(current_line);
+        }
+
+        (wrapped_lines, cursor_row, cursor_col)
+    }
+
     fn draw_header(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
         let cancel_label = if self.pending_cancel {
             "  press Esc again to cancel"
@@ -505,7 +562,10 @@ impl App {
         } else {
             spans.push(Span::styled(format!(" {}{}", self.model, plugin_label), highlight_style));
             spans.push(Span::styled(" | ", base_style));
-            spans.push(Span::styled("Shift+↑↓ scroll · Ctrl+C quit", Style::default().fg(Color::DarkGray).bg(Color::Gray)));
+            spans.push(Span::styled(
+                "Shift+Enter newline · Shift+↑↓ scroll · Ctrl+C quit",
+                Style::default().fg(Color::DarkGray).bg(Color::Gray),
+            ));
         }
 
         let ctx_pct = if self.context_limit > 0 {
@@ -636,37 +696,7 @@ impl App {
             let inner_width = input_area.width as usize;
             let text_width = inner_width.saturating_sub(prompt_width).max(1);
 
-            let chars: Vec<char> = self.input.chars().collect();
-            let mut wrapped_lines: Vec<String> = Vec::new();
-            let mut current_line = String::new();
-            let mut cursor_row: u16 = 0;
-            let mut cursor_col: usize = 0;
-
-            for (i, ch) in chars.iter().enumerate() {
-                if i == self.cursor {
-                    cursor_row = wrapped_lines.len() as u16;
-                    cursor_col = current_line.chars().count();
-                }
-                if current_line.chars().count() >= text_width {
-                    wrapped_lines.push(current_line.clone());
-                    current_line.clear();
-                }
-                current_line.push(*ch);
-            }
-            if self.cursor == chars.len() {
-                if current_line.chars().count() >= text_width {
-                    wrapped_lines.push(current_line.clone());
-                    current_line.clear();
-                    cursor_row = wrapped_lines.len() as u16;
-                    cursor_col = 0;
-                } else {
-                    cursor_row = wrapped_lines.len() as u16;
-                    cursor_col = current_line.chars().count();
-                }
-            }
-            if !current_line.is_empty() || chars.is_empty() {
-                wrapped_lines.push(current_line);
-            }
+            let (wrapped_lines, cursor_row, cursor_col) = self.wrap_input_lines(text_width);
 
             let mut lines: Vec<Line> = Vec::new();
             for (i, line) in wrapped_lines.iter().enumerate() {
