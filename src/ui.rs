@@ -27,6 +27,7 @@ enum ConversationItem {
     AssistantText(String),
     ResponseMeta { tokens: u64, elapsed_secs: f64, tok_per_sec: f64 },
     ToolBlock {
+        index: usize,
         name: String,
         args_summary: Option<String>,
         output: String,
@@ -356,31 +357,55 @@ impl App {
                     s.push_str(&text);
                 }
             }
-            UiEvent::ToolCallBegin { name } => {
+            UiEvent::ToolCallBegin { index, name } => {
                 self.end_active_thinking();
+                for item in &mut self.items {
+                    if let ConversationItem::ToolBlock { is_running, .. } = item {
+                        *is_running = false;
+                    }
+                }
                 self.items.push(ConversationItem::ToolBlock {
+                    index,
                     name,
                     args_summary: None,
                     output: String::new(),
                     is_running: true,
                 });
             }
-            UiEvent::ToolCallArgs { args_summary } => {
-                if let Some(ConversationItem::ToolBlock {
-                    args_summary: ref mut summary,
-                    ..
-                }) = self.items.last_mut()
-                {
-                    *summary = Some(args_summary);
+            UiEvent::ToolCallArgs { index, args_summary } => {
+                let target = self.items.iter().rposition(|item| {
+                    matches!(item, ConversationItem::ToolBlock { index: i, .. } if *i == index)
+                });
+
+                for item in &mut self.items {
+                    if let ConversationItem::ToolBlock { is_running, .. } = item {
+                        *is_running = false;
+                    }
+                }
+
+                if let Some(target) = target {
+                    if let ConversationItem::ToolBlock {
+                        args_summary: ref mut summary,
+                        is_running,
+                        ..
+                    } = &mut self.items[target]
+                    {
+                        *summary = Some(args_summary);
+                        *is_running = true;
+                    }
                 }
             }
-            UiEvent::ToolResult { output_summary } => {
-                if let Some(ConversationItem::ToolBlock {
-                    output, is_running, ..
-                }) = self.items.last_mut()
-                {
-                    *output = output_summary;
-                    *is_running = false;
+            UiEvent::ToolResult { index, output_summary } => {
+                if let Some(target) = self.items.iter().rposition(|item| {
+                    matches!(item, ConversationItem::ToolBlock { index: i, .. } if *i == index)
+                }) {
+                    if let ConversationItem::ToolBlock {
+                        output, is_running, ..
+                    } = &mut self.items[target]
+                    {
+                        *output = output_summary;
+                        *is_running = false;
+                    }
                 }
             }
             UiEvent::Error(msg) => {
@@ -771,6 +796,7 @@ impl App {
                     lines.push(Line::from(""));
                 }
                 ConversationItem::ToolBlock {
+                    index: _,
                     name,
                     args_summary,
                     output,
@@ -781,22 +807,29 @@ impl App {
                     } else {
                         String::new()
                     };
-                    let args_display = match args_summary {
-                        Some(a) if !a.is_empty() => format!(" {}", a),
-                        _ => String::new(),
-                    };
-                    let header = format!(" [{}]{}{}", name, args_display, spinner);
+                    let header = format!(" [{}]{}", name, spinner);
                     lines.push(Line::from(Span::styled(
                         header,
                         Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
                     )));
                     let dim = Style::default().fg(Color::DarkGray);
-                    
+
+                    if let Some(args) = args_summary {
+                        if !args.is_empty() {
+                            let args_line = format!("args: {}", args);
+                            for wrapped in wrap_with_prefix(&args_line, " │ ", w) {
+                                lines.push(Line::from(Span::styled(wrapped, dim)));
+                            }
+                        }
+                    }
+
                     for wrapped in wrap_with_prefix(output, " │ ", w) {
                         lines.push(Line::from(Span::styled(wrapped, dim)));
                     }
 
-                    if !output.is_empty() {
+                    if args_summary.as_ref().is_some_and(|args| !args.is_empty())
+                        || !output.is_empty()
+                    {
                         lines.push(Line::from(Span::styled(" └", dim)));
                     }
                     lines.push(Line::from(""));
