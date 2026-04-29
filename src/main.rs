@@ -21,6 +21,7 @@ struct Config {
     plugins: Option<String>,
     context_limit: Option<u64>,
     provider: Option<String>,
+    interleaved: Option<bool>,
 }
 
 fn load_config() -> Config {
@@ -73,6 +74,10 @@ struct Args {
     /// Provider name to route through (e.g. "Together")
     #[arg(long)]
     provider: Option<String>,
+
+    /// Enable interleaved reasoning for models that support it (e.g. GPT-OSS)
+    #[arg(long)]
+    interleaved: bool,
 }
 
 fn resolve(args: Args) -> Resolved {
@@ -90,6 +95,11 @@ fn resolve(args: Args) -> Resolved {
     let context_limit = args.context_limit.or(cfg.context_limit).unwrap_or(128000);
 
     let provider = args.provider.or(cfg.provider);
+    let interleaved = if args.interleaved {
+        true
+    } else {
+        cfg.interleaved.unwrap_or(false)
+    };
 
     Resolved {
         api_url,
@@ -99,6 +109,7 @@ fn resolve(args: Args) -> Resolved {
         plugins,
         context_limit,
         provider,
+        interleaved,
     }
 }
 
@@ -110,6 +121,7 @@ struct Resolved {
     plugins: Option<String>,
     context_limit: u64,
     provider: Option<String>,
+    interleaved: bool,
 }
 
 fn main() {
@@ -124,10 +136,21 @@ fn main() {
     let system_prompt = r.system_prompt.clone();
     let plugin_dir = r.plugins.clone();
     let provider = r.provider.clone();
+    let interleaved = r.interleaved;
     let cancel = std::sync::Arc::new(AtomicBool::new(false));
     let cancel_agent = cancel.clone();
     std::thread::spawn(move || {
-        agent::run(client, model, system_prompt, plugin_dir, provider, cancel_agent, cmd_rx, ui_tx);
+        agent::run(
+            client,
+            model,
+            system_prompt,
+            plugin_dir,
+            provider,
+            interleaved,
+            cancel_agent,
+            cmd_rx,
+            ui_tx,
+        );
     });
 
     let mut app = ui::App::new(r.model, r.context_limit, cancel, cmd_tx, ui_rx);
@@ -137,3 +160,4 @@ fn main() {
         std::process::exit(1);
     }
 }
+

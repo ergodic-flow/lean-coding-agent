@@ -29,6 +29,8 @@ pub struct ChatRequest {
         serialize_with = "serialize_provider"
     )]
     pub provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interleaved: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -120,7 +122,7 @@ pub struct ResponseMessage {
     pub content: Option<String>,
     #[serde(default)]
     pub tool_calls: Option<Vec<ToolCall>>,
-    #[serde(default)]
+    #[serde(default, alias = "reasoning")]
     pub reasoning_content: Option<String>,
 }
 
@@ -144,7 +146,7 @@ pub struct StreamDelta {
     pub content: Option<String>,
     #[serde(default)]
     pub tool_calls: Option<Vec<StreamToolCall>>,
-    #[serde(default)]
+    #[serde(default, alias = "reasoning")]
     pub reasoning_content: Option<String>,
 }
 
@@ -368,3 +370,4 @@ impl ApiClient {
         Ok(())
     }
 }
+

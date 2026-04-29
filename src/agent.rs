@@ -52,6 +52,7 @@ pub fn run(
     system_prompt: Option<String>,
     plugin_dir: Option<String>,
     provider: Option<String>,
+    interleaved: bool,
     cancel: Arc<AtomicBool>,
     cmd_rx: mpsc::Receiver<AgentCommand>,
     ui_tx: mpsc::Sender<UiEvent>,
@@ -107,7 +108,17 @@ pub fn run(
                     UserContent::Multimodal(parts)
                 };
                 messages.push(Message::User { content });
-                if let Err(e) = agent_loop(&client, &model, &provider, &mut messages, &all_tools, &plugins, &cancel, &ui_tx) {
+                if let Err(e) = agent_loop(
+                    &client,
+                    &model,
+                    &provider,
+                    interleaved,
+                    &mut messages,
+                    &all_tools,
+                    &plugins,
+                    &cancel,
+                    &ui_tx,
+                ) {
                     let _ = ui_tx.send(UiEvent::Error(e));
                 }
                 let _ = ui_tx.send(UiEvent::Done);
@@ -120,6 +131,7 @@ fn agent_loop(
     client: &api::ApiClient,
     model: &str,
     provider: &Option<String>,
+    interleaved: bool,
     messages: &mut Vec<Message>,
     tool_defs: &[api::ToolDef],
     plugins: &PluginManager,
@@ -138,6 +150,7 @@ fn agent_loop(
             tools: Some(tool_defs.to_vec()),
             stream_options: Some(StreamOptions { include_usage: true }),
             provider: provider.clone(),
+            interleaved: interleaved.then_some(true),
         };
 
         let start = Instant::now();
@@ -295,3 +308,4 @@ fn summarize_args(name: &str, args: &serde_json::Value) -> String {
         _ => args.to_string(),
     }
 }
+

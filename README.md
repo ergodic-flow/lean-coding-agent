@@ -16,7 +16,7 @@ cargo build --release
 ./target/release/coding-agent --api-url http://0.0.0.0:8080/v1 --api-key YOUR_API_KEY -m default
 
 # With custom plugins directory
-./target/release/coding-agent --plugins ./my-tools
+./target/release/coding-agent --plugins ./plugins
 ```
 
 ## CLI Options
@@ -29,6 +29,21 @@ cargo build --release
 | `--system-prompt` | built-in | Override the default system prompt |
 | `--plugins` | `./plugins` | Directory to load Lua plugins from (skipped if absent) |
 | `--context-limit` | `128000` | Model context window size (for usage display) |
+| `--provider` | none | Provider name to route through |
+| `--interleaved` | `false` | Enable interleaved reasoning for models that support it, such as GPT-OSS |
+
+## Config File
+
+Options can also be set in `~/.config/lean_agent.json`:
+
+```json
+{
+  "api_url": "http://0.0.0.0:8080/v1",
+  "model": "openai/gpt-oss-20b",
+  "api_key": "YOUR_API_KEY",
+  "interleaved": true
+}
+```
 
 ## Built-in Tools
 
@@ -69,3 +84,4 @@ We are inspired by the following projects:
 - [pi.dev](https://pi.dev/)
 - [vim](https://www.vim.org/)
 - [opencode](https://opencode.ai/)
+
