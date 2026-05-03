@@ -21,6 +21,28 @@ use crate::agent::{AgentCommand, UiEvent};
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const SPINNER_INTERVAL_MS: u64 = 80;
 
+const UI_BG: Color = Color::Rgb(40, 40, 40);
+const UI_PANEL: Color = Color::Rgb(60, 56, 54);
+const UI_FG: Color = Color::Rgb(235, 219, 178);
+const UI_DIM: Color = Color::Rgb(146, 131, 116);
+const UI_DIMMER: Color = Color::Rgb(102, 92, 84);
+const UI_RED: Color = Color::Rgb(251, 73, 52);
+const UI_RED_BG: Color = Color::Rgb(157, 0, 6);
+const UI_GREEN: Color = Color::Rgb(184, 187, 38);
+const UI_YELLOW: Color = Color::Rgb(250, 189, 47);
+const UI_AQUA: Color = Color::Rgb(142, 192, 124);
+const UI_BLUE: Color = Color::Rgb(131, 165, 152);
+const UI_PURPLE: Color = Color::Rgb(211, 134, 155);
+const UI_ORANGE: Color = Color::Rgb(254, 128, 25);
+
+fn base_style() -> Style {
+    Style::default().fg(UI_FG).bg(UI_BG)
+}
+
+fn fg_style(color: Color) -> Style {
+    base_style().fg(color)
+}
+
 enum ConversationItem {
     UserMessage { text: String, images: Vec<String> },
     Thinking { text: String, is_running: bool },
@@ -176,7 +198,7 @@ impl App {
                             let word_start = trimmed.rfind(char::is_whitespace).map(|i| i + 1).unwrap_or(0);
                             let chars_to_remove = left[word_start..].chars().count();
                             let byte_start = self.char_to_byte(self.cursor - chars_to_remove);
-                            
+
                             self.input.drain(byte_start..byte_cursor);
                             self.cursor -= chars_to_remove;
                         }
@@ -462,6 +484,8 @@ impl App {
     }
 
     fn draw(&mut self, frame: &mut Frame) {
+        frame.render_widget(Block::default().style(base_style()), frame.area());
+
         let input_h = self.input_height(frame.area().width);
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -573,23 +597,25 @@ impl App {
             String::new()
         };
 
-        let base_style = Style::default().fg(Color::Black).bg(Color::Gray);
-        let highlight_style = base_style.add_modifier(Modifier::BOLD);
+        let header_style = Style::default().fg(UI_FG).bg(UI_PANEL);
+        let highlight_style = header_style.fg(UI_YELLOW).add_modifier(Modifier::BOLD);
+        let hint_style = header_style.fg(UI_DIM);
+        let cancel_style = Style::default().fg(UI_FG).bg(UI_RED_BG);
 
         let mut spans: Vec<Span<'_>> = Vec::new();
 
         if self.pending_cancel {
             spans.push(Span::styled(
                 format!(" {}{}", self.model, plugin_label),
-                Style::default().fg(Color::White).bg(Color::Red).add_modifier(Modifier::BOLD),
+                cancel_style.add_modifier(Modifier::BOLD),
             ));
-            spans.push(Span::styled(cancel_label, Style::default().fg(Color::White).bg(Color::Red)));
+            spans.push(Span::styled(cancel_label, cancel_style));
         } else {
             spans.push(Span::styled(format!(" {}{}", self.model, plugin_label), highlight_style));
-            spans.push(Span::styled(" | ", base_style));
+            spans.push(Span::styled(" | ", header_style));
             spans.push(Span::styled(
                 "Shift+Enter newline · Shift+↑↓ scroll · Ctrl+C quit",
-                Style::default().fg(Color::DarkGray).bg(Color::Gray),
+                hint_style,
             ));
         }
 
@@ -620,21 +646,26 @@ impl App {
         let left_width = area.width.saturating_sub(tokens_width);
 
         let token_style = if self.pending_cancel {
-            Style::default().fg(Color::White).bg(Color::Red)
+            cancel_style
         } else {
-            Style::default().fg(Color::Black).bg(Color::Gray)
+            header_style.fg(UI_AQUA)
+        };
+        let pad_style = if self.pending_cancel {
+            cancel_style
+        } else {
+            header_style
         };
 
         let span_chars: usize = spans.iter().map(|s| s.content.chars().count()).sum();
         let pad = left_width as usize;
         if span_chars < pad {
-            spans.push(Span::styled(" ".repeat(pad - span_chars), base_style));
+            spans.push(Span::styled(" ".repeat(pad - span_chars), pad_style));
         }
 
         spans.push(Span::styled(ctx_pct, token_style));
 
         let header = Line::from(spans);
-        let paragraph = Paragraph::new(header);
+        let paragraph = Paragraph::new(header).style(pad_style);
         frame.render_widget(paragraph, area);
     }
 
@@ -657,19 +688,20 @@ impl App {
             .skip(start)
             .take(visible)
             .collect();
-            
+
         while visible_lines.len() < visible {
             visible_lines.push(Line::from(""));
         }
 
-        let paragraph = Paragraph::new(visible_lines);
+        let paragraph = Paragraph::new(visible_lines).style(base_style());
         frame.render_widget(paragraph, area);
     }
 
     fn draw_input(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
         let block = Block::default()
             .borders(Borders::TOP)
-            .border_style(Style::default().fg(Color::DarkGray));
+            .style(base_style())
+            .border_style(fg_style(UI_DIMMER));
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
@@ -690,8 +722,9 @@ impl App {
             let label = format!(" [attached: {}]  Ctrl+D clear | Backspace remove last", names.join(", "));
             let paragraph = Paragraph::new(Line::from(Span::styled(
                 label,
-                Style::default().fg(Color::Magenta),
-            )));
+                fg_style(UI_PURPLE),
+            )))
+            .style(base_style());
             frame.render_widget(paragraph, a_area);
         }
 
@@ -705,17 +738,15 @@ impl App {
             let line = Line::from(vec![
                 Span::styled(
                     format!(" {} ", s),
-                    Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                    fg_style(UI_GREEN).add_modifier(Modifier::BOLD),
                 ),
-                Span::styled("generating...", Style::default().fg(Color::Green)),
-                Span::styled(cancel_hint, Style::default().fg(Color::DarkGray)),
+                Span::styled("generating...", fg_style(UI_GREEN)),
+                Span::styled(cancel_hint, fg_style(UI_DIM)),
             ]);
-            let paragraph = Paragraph::new(line);
+            let paragraph = Paragraph::new(line).style(base_style());
             frame.render_widget(paragraph, input_area);
         } else {
-            let prompt_style = Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD);
+            let prompt_style = fg_style(UI_ORANGE).add_modifier(Modifier::BOLD);
 
             let prompt_width: usize = 2;
             let inner_width = input_area.width as usize;
@@ -728,16 +759,16 @@ impl App {
                 if i == 0 {
                     lines.push(Line::from(vec![
                         Span::styled("> ", prompt_style),
-                        Span::styled(line.clone(), Style::default()),
+                        Span::styled(line.clone(), base_style()),
                     ]));
                 } else {
                     lines.push(Line::from(vec![
                         Span::styled("  ", prompt_style),
-                        Span::styled(line.clone(), Style::default()),
+                        Span::styled(line.clone(), base_style()),
                     ]));
                 }
             }
-            let paragraph = Paragraph::new(lines);
+            let paragraph = Paragraph::new(lines).style(base_style());
             frame.render_widget(paragraph, input_area);
 
             let cursor_x = input_area.x + (prompt_width + cursor_col) as u16;
@@ -755,21 +786,21 @@ impl App {
                 ConversationItem::UserMessage { text, images } => {
                     lines.push(Line::from(Span::styled(
                         " You",
-                        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                        fg_style(UI_BLUE).add_modifier(Modifier::BOLD),
                     )));
                     for img in images {
                         lines.push(Line::from(Span::styled(
                             format!("  [img: {}]", img),
-                            Style::default().fg(Color::Magenta),
+                            fg_style(UI_PURPLE),
                         )));
                     }
                     for wrapped in wrap_with_prefix(text, "  ", w) {
-                        lines.push(Line::from(Span::styled(wrapped, Style::default().fg(Color::Cyan))));
+                        lines.push(Line::from(Span::styled(wrapped, fg_style(UI_BLUE))));
                     }
                     lines.push(Line::from(""));
                 }
                 ConversationItem::Thinking { text, is_running } => {
-                    let dim = Style::default().fg(Color::DarkGray);
+                    let dim = fg_style(UI_DIM);
                     let label = if *is_running { "  Thinking..." } else { "  Thought" };
                     lines.push(Line::from(Span::styled(label, dim)));
                     for wrapped in wrap_with_prefix(text, "  ", w) {
@@ -780,15 +811,15 @@ impl App {
                 ConversationItem::AssistantText(msg) => {
                     lines.push(Line::from(Span::styled(
                         " Assistant",
-                        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                        fg_style(UI_GREEN).add_modifier(Modifier::BOLD),
                     )));
                     for wrapped in wrap_with_prefix(msg, "  ", w) {
-                        lines.push(Line::from(wrapped));
+                        lines.push(Line::from(Span::styled(wrapped, base_style())));
                     }
                     lines.push(Line::from(""));
                 }
                 ConversationItem::ResponseMeta { tokens, elapsed_secs, tok_per_sec } => {
-                    let dim = Style::default().fg(Color::DarkGray);
+                    let dim = fg_style(UI_DIM);
                     let meta = format!("  {} tokens · {:.1} tok/s · {:.1}s", tokens, tok_per_sec, elapsed_secs);
                     for wrapped in wrap_with_prefix(&meta, "", w) {
                         lines.push(Line::from(Span::styled(wrapped, dim)));
@@ -810,9 +841,9 @@ impl App {
                     let header = format!(" [{}]{}", name, spinner);
                     lines.push(Line::from(Span::styled(
                         header,
-                        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                        fg_style(UI_YELLOW).add_modifier(Modifier::BOLD),
                     )));
-                    let dim = Style::default().fg(Color::DarkGray);
+                    let dim = fg_style(UI_DIM);
 
                     if let Some(args) = args_summary {
                         if !args.is_empty() {
@@ -837,7 +868,7 @@ impl App {
                 ConversationItem::Error(msg) => {
                     let err = format!(" Error: {}", msg);
                     for wrapped in wrap_with_prefix(&err, "", w) {
-                        lines.push(Line::from(Span::styled(wrapped, Style::default().fg(Color::Red))));
+                        lines.push(Line::from(Span::styled(wrapped, fg_style(UI_RED))));
                     }
                     lines.push(Line::from(""));
                 }
@@ -878,7 +909,7 @@ fn wrap_with_prefix(text: &str, prefix: &str, max_width: usize) -> Vec<String> {
             out.push(prefix.to_string());
             continue;
         }
-        
+
         let mut current = String::new();
         for word in line.split_inclusive(' ') {
             let word_len = word.chars().count();
@@ -911,11 +942,11 @@ fn wrap_with_prefix(text: &str, prefix: &str, max_width: usize) -> Vec<String> {
             out.push(format!("{}{}", prefix, current));
         }
     }
-    
+
     if out.is_empty() {
         out.push(prefix.to_string());
     }
-    
+
     out
 }
 
