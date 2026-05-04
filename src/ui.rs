@@ -1,12 +1,15 @@
+use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Instant;
 
-use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
-    KeyboardEnhancementFlags, MouseEventKind, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
+use crossterm::{
+    event::{
+        self, Event, KeyCode, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
+        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    },
+    Command,
 };
 use ratatui::{
     backend::CrosstermBackend,
@@ -35,6 +38,22 @@ const UI_AQUA: Color = Color::Rgb(142, 192, 124);
 const UI_BLUE: Color = Color::Rgb(131, 165, 152);
 const UI_PURPLE: Color = Color::Rgb(211, 134, 155);
 const UI_ORANGE: Color = Color::Rgb(254, 128, 25);
+
+struct EnableAlternateScroll;
+
+impl Command for EnableAlternateScroll {
+    fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
+        f.write_str("\x1b[?1007h")
+    }
+}
+
+struct DisableAlternateScroll;
+
+impl Command for DisableAlternateScroll {
+    fn write_ansi(&self, f: &mut impl fmt::Write) -> fmt::Result {
+        f.write_str("\x1b[?1007l")
+    }
+}
 
 fn base_style() -> Style {
     Style::default().fg(UI_FG).bg(UI_BG)
@@ -123,7 +142,7 @@ impl App {
             .map_err(|e| e.to_string())?;
         crossterm::execute!(stdout, crossterm::event::EnableBracketedPaste)
             .map_err(|e| e.to_string())?;
-        crossterm::execute!(stdout, EnableMouseCapture).map_err(|e| e.to_string())?;
+        crossterm::execute!(stdout, EnableAlternateScroll).map_err(|e| e.to_string())?;
         crossterm::execute!(
             stdout,
             PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
@@ -136,7 +155,7 @@ impl App {
 
         crossterm::terminal::disable_raw_mode().ok();
         crossterm::execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags).ok();
-        crossterm::execute!(terminal.backend_mut(), DisableMouseCapture).ok();
+        crossterm::execute!(terminal.backend_mut(), DisableAlternateScroll).ok();
         crossterm::execute!(terminal.backend_mut(), crossterm::event::DisableBracketedPaste).ok();
         crossterm::execute!(terminal.backend_mut(), crossterm::terminal::LeaveAlternateScreen).ok();
         terminal.show_cursor().ok();
@@ -281,11 +300,11 @@ impl App {
                                 self.cursor = self.input.chars().count();
                             }
                         }
-                        KeyCode::Up if has_shift => {
+                        KeyCode::Up => {
                             self.scroll_offset = self.scroll_offset.saturating_sub(3);
                             self.auto_scroll = false;
                         }
-                        KeyCode::Down if has_shift => {
+                        KeyCode::Down => {
                             self.scroll_offset = self.scroll_offset.saturating_add(3);
                         }
                         KeyCode::PageUp => {
@@ -352,16 +371,6 @@ impl App {
                         }
                     }
                 }
-                Event::Mouse(mouse) => match mouse.kind {
-                    MouseEventKind::ScrollUp => {
-                        self.scroll_offset = self.scroll_offset.saturating_sub(3);
-                        self.auto_scroll = false;
-                    }
-                    MouseEventKind::ScrollDown => {
-                        self.scroll_offset = self.scroll_offset.saturating_add(3);
-                    }
-                    _ => {}
-                },
                 _ => {}
             }
         }
@@ -627,7 +636,7 @@ impl App {
             spans.push(Span::styled(format!(" {}{}", self.model, plugin_label), highlight_style));
             spans.push(Span::styled(" | ", header_style));
             spans.push(Span::styled(
-                "Shift+Enter newline · Wheel/Shift+↑↓ scroll · Ctrl+C quit",
+                "Shift+Enter newline · Wheel/↑↓/PgUp/PgDn scroll · Ctrl+C quit",
                 hint_style,
             ));
         }
