@@ -88,6 +88,7 @@ pub struct App {
     items: Vec<ConversationItem>,
     input: String,
     cursor: usize,
+    input_scroll_offset: usize,
     scroll_offset: usize,
     auto_scroll: bool,
     busy: bool,
@@ -117,6 +118,7 @@ impl App {
             items: Vec::new(),
             input: String::new(),
             cursor: 0,
+            input_scroll_offset: 0,
             scroll_offset: 0,
             auto_scroll: true,
             busy: false,
@@ -179,17 +181,36 @@ impl App {
                 }
             }
 
-            while let Ok(event) = self.ui_rx.try_recv() {
-                self.handle_ui_event(event);
-            }
+            let ev = if event::poll(std::time::Duration::from_millis(0))
+                .map_err(|e| e.to_string())?
+            {
+                Some(event::read().map_err(|e| e.to_string())?)
+            } else {
+                for _ in 0..100 {
+                    match self.ui_rx.try_recv() {
+                        Ok(event) => self.handle_ui_event(event),
+                        Err(_) => break,
+                    }
+                }
 
-            if !event::poll(std::time::Duration::from_millis(50)).map_err(|e| e.to_string())? {
+                if event::poll(std::time::Duration::from_millis(50)).map_err(|e| e.to_string())? {
+                    Some(event::read().map_err(|e| e.to_string())?)
+                } else {
+                    None
+                }
+            };
+
+            let Some(ev) = ev else {
                 continue;
-            }
+            };
 
-            let ev = event::read().map_err(|e| e.to_string())?;
             match ev {
                 Event::Key(key) => {
+                    if key.code == KeyCode::Esc && key.kind != KeyEventKind::Release {
+                        self.handle_cancel_escape();
+                        continue;
+                    }
+
                     if key.kind != KeyEventKind::Press {
                         continue;
                     }
@@ -239,6 +260,7 @@ impl App {
                                 let image_names: Vec<String> = images.iter().map(|i| i.filename.clone()).collect();
                                 self.input.clear();
                                 self.cursor = 0;
+                                self.input_scroll_offset = 0;
                                 self.items.push(ConversationItem::UserMessage {
                                     text: msg.clone(),
                                     images: image_names,
@@ -313,18 +335,6 @@ impl App {
                         }
                         KeyCode::PageDown => {
                             self.scroll_offset = self.scroll_offset.saturating_add(20);
-                        }
-                        KeyCode::Esc => {
-                            if self.busy {
-                                if self.pending_cancel {
-                                    self.cancel.store(true, Ordering::Relaxed);
-                                    self.pending_cancel = false;
-                                    self.esc_press_time = None;
-                                } else {
-                                    self.pending_cancel = true;
-                                    self.esc_press_time = Some(Instant::now());
-                                }
-                            }
                         }
                         _ => {}
                     }
@@ -487,22 +497,36 @@ impl App {
         }
     }
 
+    fn handle_cancel_escape(&mut self) {
+        if !self.busy {
+            return;
+        }
+
+        if self.pending_cancel {
+            self.cancel.store(true, Ordering::Relaxed);
+            self.pending_cancel = false;
+            self.esc_press_time = None;
+        } else {
+            self.pending_cancel = true;
+            self.esc_press_time = Some(Instant::now());
+        }
+    }
+
     fn input_height(&self, terminal_width: u16) -> u16 {
         let base = if self.input.is_empty() || self.busy {
-            3u16
+            3usize
         } else {
             let prompt_width: usize = 2;
             let inner_width = (terminal_width as usize).saturating_sub(2).saturating_sub(prompt_width);
             if inner_width == 0 {
-                3u16
+                3
             } else {
                 let (wrapped_lines, _, _) = self.wrap_input_lines(inner_width);
-                let lines = wrapped_lines.len();
-                (lines as u16).saturating_add(2)
+                wrapped_lines.len().saturating_add(2)
             }
         };
-        let attachment_lines = if self.pending_images.is_empty() { 0u16 } else { 1 };
-        base.saturating_add(attachment_lines).min(12)
+        let attachment_lines = if self.pending_images.is_empty() { 0usize } else { 1 };
+        base.saturating_add(attachment_lines).min(12) as u16
     }
 
     fn draw(&mut self, frame: &mut Frame) {
@@ -563,12 +587,12 @@ impl App {
         }
     }
 
-    fn wrap_input_lines(&self, text_width: usize) -> (Vec<String>, u16, usize) {
+    fn wrap_input_lines(&self, text_width: usize) -> (Vec<String>, usize, usize) {
         let text_width = text_width.max(1);
         let chars: Vec<char> = self.input.chars().collect();
         let mut wrapped_lines: Vec<String> = Vec::new();
         let mut current_line = String::new();
-        let mut cursor_row: u16 = 0;
+        let mut cursor_row: usize = 0;
         let mut cursor_col: usize = 0;
 
         for (i, ch) in chars.iter().enumerate() {
@@ -577,7 +601,7 @@ impl App {
             }
 
             if i == self.cursor {
-                cursor_row = wrapped_lines.len() as u16;
+                cursor_row = wrapped_lines.len();
                 cursor_col = current_line.chars().count();
             }
 
@@ -591,10 +615,10 @@ impl App {
         if self.cursor == chars.len() {
             if current_line.chars().count() >= text_width {
                 wrapped_lines.push(std::mem::take(&mut current_line));
-                cursor_row = wrapped_lines.len() as u16;
+                cursor_row = wrapped_lines.len();
                 cursor_col = 0;
             } else {
-                cursor_row = wrapped_lines.len() as u16;
+                cursor_row = wrapped_lines.len();
                 cursor_col = current_line.chars().count();
             }
         }
@@ -719,7 +743,7 @@ impl App {
         frame.render_widget(paragraph, area);
     }
 
-    fn draw_input(&self, frame: &mut Frame, area: ratatui::layout::Rect) {
+    fn draw_input(&mut self, frame: &mut Frame, area: ratatui::layout::Rect) {
         let block = Block::default()
             .borders(Borders::TOP)
             .style(base_style())
@@ -775,9 +799,25 @@ impl App {
             let text_width = inner_width.saturating_sub(prompt_width).max(1);
 
             let (wrapped_lines, cursor_row, cursor_col) = self.wrap_input_lines(text_width);
+            let visible_rows = input_area.height as usize;
+            let max_scroll = wrapped_lines.len().saturating_sub(visible_rows);
+
+            if visible_rows > 0 {
+                if cursor_row < self.input_scroll_offset {
+                    self.input_scroll_offset = cursor_row;
+                } else if cursor_row >= self.input_scroll_offset + visible_rows {
+                    self.input_scroll_offset = cursor_row.saturating_sub(visible_rows - 1);
+                }
+            }
+            self.input_scroll_offset = self.input_scroll_offset.min(max_scroll);
 
             let mut lines: Vec<Line> = Vec::new();
-            for (i, line) in wrapped_lines.iter().enumerate() {
+            for (i, line) in wrapped_lines
+                .iter()
+                .enumerate()
+                .skip(self.input_scroll_offset)
+                .take(visible_rows)
+            {
                 if i == 0 {
                     lines.push(Line::from(vec![
                         Span::styled("> ", prompt_style),
@@ -793,9 +833,15 @@ impl App {
             let paragraph = Paragraph::new(lines).style(base_style());
             frame.render_widget(paragraph, input_area);
 
+            if visible_rows == 0 {
+                return;
+            }
+
             let cursor_x = input_area.x + (prompt_width + cursor_col) as u16;
-            let cursor_y = input_area.y + cursor_row;
-            frame.set_cursor_position((cursor_x, cursor_y));
+            let cursor_y = input_area.y + cursor_row.saturating_sub(self.input_scroll_offset) as u16;
+            if cursor_y < input_area.y.saturating_add(input_area.height) {
+                frame.set_cursor_position((cursor_x, cursor_y));
+            }
         }
     }
 

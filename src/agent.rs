@@ -237,10 +237,17 @@ fn agent_loop(
                             });
 
                             let result = if plugins.has_tool(&tc.function.name) {
+                                if cancel.load(Ordering::Relaxed) {
+                                    return Err("cancelled".to_string());
+                                }
                                 plugins.execute(&tc.function.name, args)
                             } else {
-                                tools::execute(&tc.function.name, args)
+                                tools::execute(&tc.function.name, args, cancel)
                             };
+
+                            if cancel.load(Ordering::Relaxed) {
+                                return Err("cancelled".to_string());
+                            }
 
                             let display = if result.len() > 500 {
                                 let truncated: String = result.chars().take(500).collect();
@@ -308,4 +315,3 @@ fn summarize_args(name: &str, args: &serde_json::Value) -> String {
         _ => args.to_string(),
     }
 }
-

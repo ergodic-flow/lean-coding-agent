@@ -1,6 +1,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 
 use crate::api::{ToolDef, ToolFunction};
 
@@ -134,9 +139,13 @@ pub fn definitions() -> Vec<ToolDef> {
     ]
 }
 
-pub fn execute(name: &str, args: serde_json::Value) -> String {
+pub fn execute(name: &str, args: serde_json::Value, cancel: &AtomicBool) -> String {
+    if cancel.load(Ordering::Relaxed) {
+        return "cancelled".into();
+    }
+
     match name {
-        "bash" => exec_bash(args),
+        "bash" => exec_bash(args, cancel),
         "read" => exec_read(args),
         "write" => exec_write(args),
         "edit" => exec_edit(args),
@@ -144,7 +153,7 @@ pub fn execute(name: &str, args: serde_json::Value) -> String {
     }
 }
 
-fn exec_bash(args: serde_json::Value) -> String {
+fn exec_bash(args: serde_json::Value, cancel: &AtomicBool) -> String {
     let command = match args["command"].as_str() {
         Some(c) => c,
         None => return "Error: command is required".into(),
@@ -152,6 +161,10 @@ fn exec_bash(args: serde_json::Value) -> String {
 
     let mut cmd = Command::new("bash");
     cmd.arg("-c").arg(command);
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    #[cfg(unix)]
+    cmd.process_group(0);
 
     if let Some(dir) = args["workdir"].as_str() {
         cmd.current_dir(dir);
@@ -159,9 +172,31 @@ fn exec_bash(args: serde_json::Value) -> String {
         cmd.current_dir(std::env::current_dir().unwrap_or_default());
     }
 
-    let output = match cmd.output() {
-        Ok(o) => o,
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
         Err(e) => return format!("Failed to execute: {}", e),
+    };
+
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            kill_child(&mut child);
+            let _ = child.wait_with_output();
+            return "cancelled".into();
+        }
+
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            Err(e) => {
+                kill_child(&mut child);
+                return format!("Failed to wait for command: {}", e);
+            }
+        }
+    }
+
+    let output = match child.wait_with_output() {
+        Ok(output) => output,
+        Err(e) => return format!("Failed to read command output: {}", e),
     };
 
     let mut result = String::new();
@@ -185,6 +220,21 @@ fn exec_bash(args: serde_json::Value) -> String {
         "[no output]".into()
     } else {
         result
+    }
+}
+
+fn kill_child(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        let pgid = format!("-{}", child.id());
+        let _ = Command::new("kill").arg("-TERM").arg(&pgid).status();
+        std::thread::sleep(Duration::from_millis(100));
+        let _ = Command::new("kill").arg("-KILL").arg(&pgid).status();
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = child.kill();
     }
 }
 
