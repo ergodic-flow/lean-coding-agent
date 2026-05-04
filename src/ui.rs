@@ -4,8 +4,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crossterm::event::{
-    self, Event, KeyCode, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
-    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+    KeyboardEnhancementFlags, MouseEventKind, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
 };
 use ratatui::{
     backend::CrosstermBackend,
@@ -122,6 +123,7 @@ impl App {
             .map_err(|e| e.to_string())?;
         crossterm::execute!(stdout, crossterm::event::EnableBracketedPaste)
             .map_err(|e| e.to_string())?;
+        crossterm::execute!(stdout, EnableMouseCapture).map_err(|e| e.to_string())?;
         crossterm::execute!(
             stdout,
             PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
@@ -134,6 +136,7 @@ impl App {
 
         crossterm::terminal::disable_raw_mode().ok();
         crossterm::execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags).ok();
+        crossterm::execute!(terminal.backend_mut(), DisableMouseCapture).ok();
         crossterm::execute!(terminal.backend_mut(), crossterm::event::DisableBracketedPaste).ok();
         crossterm::execute!(terminal.backend_mut(), crossterm::terminal::LeaveAlternateScreen).ok();
         terminal.show_cursor().ok();
@@ -349,6 +352,16 @@ impl App {
                         }
                     }
                 }
+                Event::Mouse(mouse) => match mouse.kind {
+                    MouseEventKind::ScrollUp => {
+                        self.scroll_offset = self.scroll_offset.saturating_sub(3);
+                        self.auto_scroll = false;
+                    }
+                    MouseEventKind::ScrollDown => {
+                        self.scroll_offset = self.scroll_offset.saturating_add(3);
+                    }
+                    _ => {}
+                },
                 _ => {}
             }
         }
@@ -614,7 +627,7 @@ impl App {
             spans.push(Span::styled(format!(" {}{}", self.model, plugin_label), highlight_style));
             spans.push(Span::styled(" | ", header_style));
             spans.push(Span::styled(
-                "Shift+Enter newline · Shift+↑↓ scroll · Ctrl+C quit",
+                "Shift+Enter newline · Wheel/Shift+↑↓ scroll · Ctrl+C quit",
                 hint_style,
             ));
         }
