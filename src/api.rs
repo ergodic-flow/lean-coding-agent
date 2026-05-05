@@ -344,7 +344,7 @@ impl ApiClient {
                     on_event(StreamEvent::ThinkingDelta(reasoning.clone()))?;
                 }
 
-                if let Some(ref text) = choice.delta.content {
+                if let Some(text) = choice.delta.content.as_ref().filter(|text| !text.is_empty()) {
                     content_acc.push_str(text);
                     on_event(StreamEvent::ContentDelta(text.clone()))?;
                 }
@@ -385,3 +385,4 @@ impl ApiClient {
         Ok(())
     }
 }
+
