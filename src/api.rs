@@ -212,9 +212,18 @@ impl ApiClient {
             req = req.set("Authorization", &format!("Bearer {}", key));
         }
 
-        let response = req
-            .send_json(serde_json::to_value(request).map_err(|e| format!("serialize: {}", e))?)
-            .map_err(|e| format!("API request failed: {}", e))?;
+        let body = serde_json::to_value(request).map_err(|e| format!("serialize: {}", e))?;
+        let response = match req.send_json(body) {
+            Ok(response) => response,
+            Err(ureq::Error::Status(code, response)) => {
+                let status = response.status_text().to_string();
+                let body = response
+                    .into_string()
+                    .unwrap_or_else(|e| format!("<failed to read error body: {}>", e));
+                return Err(format!("API request failed: {} {}: {}", code, status, body));
+            }
+            Err(e) => return Err(format!("API request failed: {}", e)),
+        };
 
         let mut reader = response.into_reader();
         let mut buffer = String::new();
@@ -277,6 +286,12 @@ impl ApiClient {
                         usage: None,
                     })?;
                     return Ok(());
+                }
+
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(data) {
+                    if let Some(error) = value.get("error") {
+                        return Err(format!("API stream error: {}", error));
+                    }
                 }
 
                 let chunk: StreamChunk =
@@ -370,4 +385,3 @@ impl ApiClient {
         Ok(())
     }
 }
-
