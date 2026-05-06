@@ -41,7 +41,12 @@ pub enum UiEvent {
     ToolCallArgs { index: usize, args_summary: String },
     ToolResult { index: usize, output_summary: String },
     TokenUsage { context: u64, output: u64 },
-    ResponseMeta { tokens: u64, elapsed_secs: f64, tok_per_sec: f64 },
+    ResponseMeta {
+        tokens: u64,
+        elapsed_secs: f64,
+        tok_per_sec: f64,
+        ttft_secs: Option<f64>,
+    },
     Error(String),
     Done,
 }
@@ -154,6 +159,7 @@ fn agent_loop(
         };
 
         let start = Instant::now();
+        let mut first_token_at: Option<Instant> = None;
 
         let mut has_tool_calls = false;
         let mut tool_call_ids: Vec<String> = Vec::new();
@@ -168,6 +174,7 @@ fn agent_loop(
 
             match event {
                 api::StreamEvent::ThinkingDelta(text) => {
+                    first_token_at.get_or_insert_with(Instant::now);
                     if !thinking_started {
                         thinking_started = true;
                         let _ = ui_tx.send(UiEvent::ThinkingStart);
@@ -176,6 +183,7 @@ fn agent_loop(
                     Ok(())
                 }
                 api::StreamEvent::ContentDelta(text) => {
+                    first_token_at.get_or_insert_with(Instant::now);
                     if !text_started {
                         text_started = true;
                         let _ = ui_tx.send(UiEvent::TextStart);
@@ -184,6 +192,7 @@ fn agent_loop(
                     Ok(())
                 }
                 api::StreamEvent::ToolCallBegin { index, id, name } => {
+                    first_token_at.get_or_insert_with(Instant::now);
                     has_tool_calls = true;
                     while tool_call_ids.len() <= index {
                         tool_call_ids.push(String::new());
@@ -194,7 +203,10 @@ fn agent_loop(
                     let _ = ui_tx.send(UiEvent::ToolCallBegin { index, name });
                     Ok(())
                 }
-                api::StreamEvent::ToolCallDelta { .. } => Ok(()),
+                api::StreamEvent::ToolCallDelta { .. } => {
+                    first_token_at.get_or_insert_with(Instant::now);
+                    Ok(())
+                }
                 api::StreamEvent::Done { message, usage } => {
                     let elapsed = start.elapsed().as_secs_f64();
 
@@ -203,15 +215,20 @@ fn agent_loop(
                             context: u.prompt_tokens,
                             output: u.completion_tokens,
                         });
-                        let tok_per_sec = if elapsed > 0.0 {
-                            u.completion_tokens as f64 / elapsed
+                        let generation_secs = first_token_at
+                            .map(|t| t.elapsed().as_secs_f64())
+                            .unwrap_or(elapsed);
+                        let tok_per_sec = if generation_secs > 0.0 {
+                            u.completion_tokens as f64 / generation_secs
                         } else {
                             0.0
                         };
+                        let ttft_secs = first_token_at.map(|t| t.duration_since(start).as_secs_f64());
                         let _ = ui_tx.send(UiEvent::ResponseMeta {
                             tokens: u.completion_tokens,
                             elapsed_secs: elapsed,
                             tok_per_sec,
+                            ttft_secs,
                         });
                     }
 

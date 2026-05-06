@@ -67,7 +67,12 @@ enum ConversationItem {
     UserMessage { text: String, images: Vec<String> },
     Thinking { text: String, is_running: bool },
     AssistantText(String),
-    ResponseMeta { tokens: u64, elapsed_secs: f64, tok_per_sec: f64 },
+    ResponseMeta {
+        tokens: u64,
+        elapsed_secs: f64,
+        tok_per_sec: f64,
+        ttft_secs: Option<f64>,
+    },
     ToolBlock {
         index: usize,
         name: String,
@@ -470,11 +475,17 @@ impl App {
                 self.context_tokens = context;
                 self.total_output_tokens += output;
             }
-            UiEvent::ResponseMeta { tokens, elapsed_secs, tok_per_sec } => {
+            UiEvent::ResponseMeta {
+                tokens,
+                elapsed_secs,
+                tok_per_sec,
+                ttft_secs,
+            } => {
                 self.items.push(ConversationItem::ResponseMeta {
                     tokens,
                     elapsed_secs,
                     tok_per_sec,
+                    ttft_secs,
                 });
             }
             UiEvent::Done => {
@@ -886,9 +897,21 @@ impl App {
                     }
                     lines.push(Line::from(""));
                 }
-                ConversationItem::ResponseMeta { tokens, elapsed_secs, tok_per_sec } => {
+                ConversationItem::ResponseMeta {
+                    tokens,
+                    elapsed_secs,
+                    tok_per_sec,
+                    ttft_secs,
+                } => {
                     let dim = fg_style(UI_DIM);
-                    let meta = format!("  {} tokens · {:.1} tok/s · {:.1}s", tokens, tok_per_sec, elapsed_secs);
+                    let meta = if let Some(ttft_secs) = ttft_secs {
+                        format!(
+                            "  {} tokens · TTFT {:.2}s · {:.1} tok/s · {:.1}s",
+                            tokens, ttft_secs, tok_per_sec, elapsed_secs
+                        )
+                    } else {
+                        format!("  {} tokens · {:.1} tok/s · {:.1}s", tokens, tok_per_sec, elapsed_secs)
+                    };
                     for wrapped in wrap_with_prefix(&meta, "", w) {
                         lines.push(Line::from(Span::styled(wrapped, dim)));
                     }
