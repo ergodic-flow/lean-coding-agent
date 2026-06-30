@@ -26,6 +26,26 @@ fn display_path(path: &Path) -> String {
     }
 }
 
+fn line_tag(line: &str) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-";
+
+    let mut hash = 0x811c9dc5u32;
+    for byte in line.as_bytes() {
+        hash ^= *byte as u32;
+        hash = hash.wrapping_mul(0x01000193);
+    }
+
+    let value = hash & 0x00ff_ffff;
+    let tag = [
+        ALPHABET[((value >> 18) & 0x3f) as usize],
+        ALPHABET[((value >> 12) & 0x3f) as usize],
+        ALPHABET[((value >> 6) & 0x3f) as usize],
+        ALPHABET[(value & 0x3f) as usize],
+    ];
+
+    String::from_utf8_lossy(&tag).into_owned()
+}
+
 pub fn definitions() -> Vec<ToolDef> {
     vec![
         ToolDef {
@@ -56,7 +76,8 @@ pub fn definitions() -> Vec<ToolDef> {
             function: ToolFunction {
                 name: "read".into(),
                 description: "Read the contents of a file. Returns lines prefixed with \
-                    'line_number: content'. Use offset (1-indexed) and limit to read a range. \
+                    'line_number:tag|content'. Use those line:tag anchors with edit. \
+                    Use offset (1-indexed) and limit to read a range. \
                     Output ends with '[N lines total, showing lines X-Y]'."
                     .into(),
                 parameters: serde_json::json!({
@@ -107,10 +128,11 @@ pub fn definitions() -> Vec<ToolDef> {
             tool_type: "function".into(),
             function: ToolFunction {
                 name: "edit".into(),
-                description: "Replace an exact substring in a file. The old_string must match \
-                    exactly (no regex or fuzzy matching). Fails if old_string is not found. \
-                    If old_string appears multiple times, set replace_all=true or it will fail \
-                    with the match count. Returns the number of occurrences replaced."
+                description: "Edit a file using line anchors returned by read. To replace or \
+                    delete lines, set old_lines to every 'line:tag' anchor in the replaced range; \
+                    those contiguous lines are replaced with new_string. To insert, set \
+                    insert_after or insert_before to one 'line:tag' anchor. Tags must match the \
+                    current file, so stale edits fail safely."
                     .into(),
                 parameters: serde_json::json!({
                     "type": "object",
@@ -119,20 +141,24 @@ pub fn definitions() -> Vec<ToolDef> {
                             "type": "string",
                             "description": "Absolute path to the file"
                         },
-                        "old_string": {
+                        "old_lines": {
                             "type": "string",
-                            "description": "Text to find in the file"
+                            "description": "Contiguous line anchors to replace, one per line, e.g. '11:rA3_\\n12:Kq9z'. Every line being replaced must be included. Use empty new_string to delete."
+                        },
+                        "insert_after": {
+                            "type": "string",
+                            "description": "Single line anchor after which to insert new_string, e.g. '13:PX0b'"
+                        },
+                        "insert_before": {
+                            "type": "string",
+                            "description": "Single line anchor before which to insert new_string, e.g. '13:PX0b'"
                         },
                         "new_string": {
                             "type": "string",
-                            "description": "Text to replace it with"
-                        },
-                        "replace_all": {
-                            "type": "boolean",
-                            "description": "Replace all occurrences instead of just the first (default: false)"
+                            "description": "Replacement or inserted lines. Use an empty string to delete old_lines."
                         }
                     },
-                    "required": ["file_path", "old_string", "new_string"]
+                    "required": ["file_path", "new_string"]
                 }),
             },
         },
@@ -273,7 +299,7 @@ fn exec_read(args: serde_json::Value) -> String {
     };
 
     let selected: Vec<String> = iter
-        .map(|(i, line)| format!("{}: {}", start + i + 1, line))
+        .map(|(i, line)| format!("{}:{}|{}", start + i + 1, line_tag(line), line))
         .collect();
 
     if selected.is_empty() {
@@ -282,7 +308,7 @@ fn exec_read(args: serde_json::Value) -> String {
 
     let mut result = selected.join("\n");
     result.push_str(&format!(
-        "\n[{} lines total, showing lines {}-{}]",
+        "\n[{} lines total, showing lines {}-{}; edit anchors are line:tag]",
         total,
         start + 1,
         start + selected.len()
@@ -324,15 +350,24 @@ fn exec_edit(args: serde_json::Value) -> String {
         Some(p) => p,
         None => return "Error: file_path is required".into(),
     };
-    let old_string = match args["old_string"].as_str() {
-        Some(s) => s,
-        None => return "Error: old_string is required".into(),
-    };
     let new_string = match args["new_string"].as_str() {
         Some(s) => s,
         None => return "Error: new_string is required".into(),
     };
-    let replace_all = args["replace_all"].as_bool().unwrap_or(false);
+    let old_lines = args["old_lines"].as_str().filter(|s| !s.trim().is_empty());
+    let insert_after = args["insert_after"]
+        .as_str()
+        .filter(|s| !s.trim().is_empty());
+    let insert_before = args["insert_before"]
+        .as_str()
+        .filter(|s| !s.trim().is_empty());
+
+    let mode_count =
+        old_lines.is_some() as u8 + insert_after.is_some() as u8 + insert_before.is_some() as u8;
+    if mode_count != 1 {
+        return "Error: set exactly one of old_lines, insert_after, or insert_before".into();
+    }
+
     let resolved = resolve_path(file_path);
 
     let content = match fs::read_to_string(&resolved) {
@@ -340,29 +375,293 @@ fn exec_edit(args: serde_json::Value) -> String {
         Err(e) => return format!("Error reading file: {}", e),
     };
 
-    let count = content.matches(old_string).count();
-    if count == 0 {
-        return "Error: old_string not found in file".into();
-    }
-    if count > 1 && !replace_all {
-        return format!(
-            "Error: old_string found {} times. Use replace_all=true to replace all.",
-            count
-        );
+    let line_ending = if content.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let had_trailing_newline = content.ends_with('\n');
+    let mut lines: Vec<String> = content.lines().map(str::to_owned).collect();
+
+    if let Some(anchor) = insert_after {
+        let (line_no, expected_tag) = match parse_anchor(anchor) {
+            Ok(anchor) => anchor,
+            Err(e) => return e,
+        };
+        if let Err(e) = verify_anchor(&lines, line_no, &expected_tag) {
+            return e;
+        }
+
+        let insertion = edit_lines(new_string);
+        let inserted = insertion.len();
+        if inserted == 0 {
+            return "Error: new_string is empty; nothing to insert".into();
+        }
+        lines.splice(line_no..line_no, insertion);
+
+        return write_edited_lines(&resolved, &lines, line_ending, had_trailing_newline)
+            .map_or_else(
+                |e| e,
+                |_| {
+                    format!(
+                        "Inserted {} line(s) after line {} in {}",
+                        inserted,
+                        line_no,
+                        display_path(&resolved)
+                    )
+                },
+            );
     }
 
-    let new_content = if replace_all {
-        content.replace(old_string, new_string)
-    } else {
-        content.replacen(old_string, new_string, 1)
+    if let Some(anchor) = insert_before {
+        let (line_no, expected_tag) = match parse_anchor(anchor) {
+            Ok(anchor) => anchor,
+            Err(e) => return e,
+        };
+        if let Err(e) = verify_anchor(&lines, line_no, &expected_tag) {
+            return e;
+        }
+
+        let insertion = edit_lines(new_string);
+        let inserted = insertion.len();
+        if inserted == 0 {
+            return "Error: new_string is empty; nothing to insert".into();
+        }
+        lines.splice((line_no - 1)..(line_no - 1), insertion);
+
+        return write_edited_lines(&resolved, &lines, line_ending, had_trailing_newline)
+            .map_or_else(
+                |e| e,
+                |_| {
+                    format!(
+                        "Inserted {} line(s) before line {} in {}",
+                        inserted,
+                        line_no,
+                        display_path(&resolved)
+                    )
+                },
+            );
+    }
+
+    let anchors = match parse_anchor_list(old_lines.unwrap_or_default()) {
+        Ok(anchors) => anchors,
+        Err(e) => return e,
     };
 
-    match fs::write(&resolved, &new_content) {
-        Ok(()) => format!(
-            "            Replaced {} occurrence(s) in {}",
-            if replace_all { count } else { 1 },
-            display_path(&resolved)
-        ),
-        Err(e) => format!("Error writing file: {}", e),
+    for window in anchors.windows(2) {
+        if window[0].0 + 1 != window[1].0 {
+            return "Error: old_lines anchors must be contiguous and in increasing line order"
+                .into();
+        }
+    }
+
+    for (line_no, expected_tag) in &anchors {
+        if let Err(e) = verify_anchor(&lines, *line_no, expected_tag) {
+            return e;
+        }
+    }
+
+    let start = anchors.first().map(|anchor| anchor.0).unwrap_or(1);
+    let end = anchors.last().map(|anchor| anchor.0).unwrap_or(start);
+    let replacement = edit_lines(new_string);
+    let inserted = replacement.len();
+    let removed = end - start + 1;
+    lines.splice((start - 1)..end, replacement);
+
+    write_edited_lines(&resolved, &lines, line_ending, had_trailing_newline).map_or_else(
+        |e| e,
+        |_| {
+            format!(
+                "Replaced lines {}-{} ({} -> {} line(s)) in {}",
+                start,
+                end,
+                removed,
+                inserted,
+                display_path(&resolved)
+            )
+        },
+    )
+}
+
+fn parse_anchor_list(value: &str) -> Result<Vec<(usize, String)>, String> {
+    let mut anchors = Vec::new();
+    for raw in value.lines() {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        anchors.push(parse_anchor(trimmed)?);
+    }
+
+    if anchors.is_empty() {
+        return Err("Error: old_lines must contain at least one line:tag anchor".into());
+    }
+
+    Ok(anchors)
+}
+
+fn parse_anchor(value: &str) -> Result<(usize, String), String> {
+    let prefix = value
+        .split_once('|')
+        .map_or(value, |(prefix, _)| prefix)
+        .trim();
+    let (line_no, tag) = prefix
+        .split_once(':')
+        .ok_or_else(|| format!("Error: invalid anchor '{}'; expected line:tag", value))?;
+    let line_no = line_no
+        .trim()
+        .parse::<usize>()
+        .map_err(|_| format!("Error: invalid line number in anchor '{}'", value))?;
+    let tag = tag.trim();
+
+    if line_no == 0 {
+        return Err("Error: line numbers are 1-indexed".into());
+    }
+    if tag.is_empty() {
+        return Err(format!("Error: missing tag in anchor '{}'", value));
+    }
+
+    Ok((line_no, tag.to_string()))
+}
+
+fn verify_anchor(lines: &[String], line_no: usize, expected_tag: &str) -> Result<(), String> {
+    let line = lines
+        .get(line_no - 1)
+        .ok_or_else(|| format!("Error: line {} is outside the file", line_no))?;
+    let actual_tag = line_tag(line);
+
+    if actual_tag == expected_tag {
+        return Ok(());
+    }
+
+    let matching_lines: Vec<String> = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(i, line)| (line_tag(line) == expected_tag).then(|| (i + 1).to_string()))
+        .take(5)
+        .collect();
+
+    if matching_lines.is_empty() {
+        Err(format!(
+            "Error: tag mismatch at line {}: expected {}, found {}. Re-read the file before editing.",
+            line_no, expected_tag, actual_tag
+        ))
+    } else {
+        Err(format!(
+            "Error: tag mismatch at line {}: expected {}, found {}. Matching tag is now at line(s): {}. Re-read the file before editing.",
+            line_no,
+            expected_tag,
+            actual_tag,
+            matching_lines.join(", ")
+        ))
+    }
+}
+
+fn edit_lines(new_string: &str) -> Vec<String> {
+    if new_string.is_empty() {
+        return Vec::new();
+    }
+
+    let mut text = new_string;
+    if let Some(stripped) = text.strip_suffix('\n') {
+        text = stripped.strip_suffix('\r').unwrap_or(stripped);
+    }
+
+    if text.is_empty() {
+        return vec![String::new()];
+    }
+
+    text.split('\n')
+        .map(|line| line.strip_suffix('\r').unwrap_or(line).to_string())
+        .collect()
+}
+
+fn write_edited_lines(
+    path: &Path,
+    lines: &[String],
+    line_ending: &str,
+    had_trailing_newline: bool,
+) -> Result<(), String> {
+    let mut content = lines.join(line_ending);
+    if had_trailing_newline && !content.is_empty() {
+        content.push_str(line_ending);
+    }
+
+    fs::write(path, content).map_err(|e| format!("Error writing file: {}", e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_file(content: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "coding-agent-tools-test-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("file.txt");
+        fs::write(&path, content).unwrap();
+        path
+    }
+
+    #[test]
+    fn read_returns_line_tags() {
+        let path = temp_file("alpha\nbeta\ngamma\n");
+
+        let output = exec_read(serde_json::json!({
+            "file_path": path.to_string_lossy()
+        }));
+
+        assert!(output.contains(&format!("2:{}|beta", line_tag("beta"))));
+        assert!(output.contains("edit anchors are line:tag"));
+    }
+
+    #[test]
+    fn edit_replaces_anchored_line() {
+        let path = temp_file("alpha\nbeta\ngamma\n");
+
+        let output = exec_edit(serde_json::json!({
+            "file_path": path.to_string_lossy(),
+            "old_lines": format!("2:{}|beta", line_tag("beta")),
+            "new_string": "BETA"
+        }));
+
+        assert!(output.contains("Replaced lines 2-2"));
+        assert_eq!(fs::read_to_string(path).unwrap(), "alpha\nBETA\ngamma\n");
+    }
+
+    #[test]
+    fn edit_rejects_stale_anchor() {
+        let path = temp_file("alpha\nchanged\ngamma\n");
+
+        let output = exec_edit(serde_json::json!({
+            "file_path": path.to_string_lossy(),
+            "old_lines": format!("2:{}", line_tag("beta")),
+            "new_string": "BETA"
+        }));
+
+        assert!(output.contains("tag mismatch"));
+        assert_eq!(fs::read_to_string(path).unwrap(), "alpha\nchanged\ngamma\n");
+    }
+
+    #[test]
+    fn edit_inserts_after_anchor() {
+        let path = temp_file("alpha\ngamma\n");
+
+        let output = exec_edit(serde_json::json!({
+            "file_path": path.to_string_lossy(),
+            "insert_after": format!("1:{}", line_tag("alpha")),
+            "new_string": "beta"
+        }));
+
+        assert!(output.contains("Inserted 1 line(s) after line 1"));
+        assert_eq!(fs::read_to_string(path).unwrap(), "alpha\nbeta\ngamma\n");
     }
 }

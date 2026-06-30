@@ -13,6 +13,7 @@ by reading, writing, and editing files, and running shell commands.
 
 ## Guidelines
 - Always read a file before editing it to understand current contents.
+- Read output includes line:tag anchors; pass those anchors to edit instead of copying old text.
 - Prefer edit over write for targeted changes.
 - Verify changes by running relevant commands (tests, linters, type checkers).
 - Be concise and direct. Do not add unnecessary comments unless asked.
