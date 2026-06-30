@@ -50,9 +50,9 @@ Options can also be set in `~/.config/lean_agent.json`:
 Four tools are always available:
 
 - **bash** — Execute shell commands. Returns stdout, stderr, and exit code.
-- **read** — Read file contents with `line:tag` edit anchors. Supports offset and limit for ranged reads.
+- **read** — Read file contents with line numbers. Supports offset and limit for ranged reads.
 - **write** — Write to a file. Creates parent directories automatically. Overwrites existing files.
-- **edit** — Replace, delete, or insert lines using `line:tag` anchors from `read`. Fails safely if the file changed and tags no longer match.
+- **edit** — Replace exact text in a file. Supports single or global replacement. Fails on ambiguous matches unless `replace_all` is set.
 
 All file tools resolve relative paths against the current working directory.
 
@@ -84,3 +84,4 @@ We are inspired by the following projects:
 - [pi.dev](https://pi.dev/)
 - [vim](https://www.vim.org/)
 - [opencode](https://opencode.ai/)
+
