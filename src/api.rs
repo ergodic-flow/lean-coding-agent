@@ -31,6 +31,8 @@ pub struct ChatRequest {
     pub provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub interleaved: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking_budget_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]

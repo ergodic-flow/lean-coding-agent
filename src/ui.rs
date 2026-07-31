@@ -20,7 +20,7 @@ use ratatui::{
     Frame, Terminal,
 };
 
-use crate::agent::{AgentCommand, UiEvent};
+use crate::agent::{AgentCommand, Effort, UiEvent};
 
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const SPINNER_INTERVAL_MS: u64 = 80;
@@ -106,6 +106,8 @@ pub struct App {
     pending_cancel: bool,
     esc_press_time: Option<Instant>,
     pending_images: Vec<ImageAttachment>,
+    effort: Effort,
+    effort_picker: Option<usize>,
     cancel: Arc<AtomicBool>,
     cmd_tx: mpsc::Sender<AgentCommand>,
     ui_rx: mpsc::Receiver<UiEvent>,
@@ -136,6 +138,8 @@ impl App {
             pending_cancel: false,
             esc_press_time: None,
             pending_images: Vec::new(),
+            effort: Effort::Off,
+            effort_picker: None,
             cancel,
             cmd_tx,
             ui_rx,
@@ -212,7 +216,33 @@ impl App {
             match ev {
                 Event::Key(key) => {
                     if key.code == KeyCode::Esc && key.kind != KeyEventKind::Release {
+                        if self.effort_picker.take().is_some() {
+                            continue;
+                        }
                         self.handle_cancel_escape();
+                        continue;
+                    }
+
+                    if self.effort_picker.is_some() {
+                        if key.kind != KeyEventKind::Press {
+                            continue;
+                        }
+                        match key.code {
+                            KeyCode::Up => {
+                                let sel = self.effort_picker.unwrap();
+                                self.effort_picker =
+                                    Some(if sel == 0 { Effort::ALL.len() - 1 } else { sel - 1 });
+                            }
+                            KeyCode::Down => {
+                                let sel = self.effort_picker.unwrap();
+                                self.effort_picker = Some((sel + 1) % Effort::ALL.len());
+                            }
+                            KeyCode::Enter => {
+                                let sel = self.effort_picker.take().unwrap();
+                                self.set_effort(Effort::ALL[sel]);
+                            }
+                            _ => {}
+                        }
                         continue;
                     }
 
@@ -259,7 +289,15 @@ impl App {
                             }
                         }
                         KeyCode::Enter => {
-                            if !self.busy && (!self.input.is_empty() || !self.pending_images.is_empty()) {
+                            if !self.busy && self.input.trim_start().starts_with('/') {
+                                let msg = self.input.clone();
+                                self.input.clear();
+                                self.cursor = 0;
+                                self.input_scroll_offset = 0;
+                                self.handle_command(&msg);
+                            } else if !self.busy
+                                && (!self.input.is_empty() || !self.pending_images.is_empty())
+                            {
                                 let msg = self.input.clone();
                                 let images = std::mem::take(&mut self.pending_images);
                                 let image_names: Vec<String> = images.iter().map(|i| i.filename.clone()).collect();
@@ -654,6 +692,8 @@ impl App {
             String::new()
         };
 
+        let effort_label = format!(" | effort:{}", self.effort.name());
+
         let header_style = Style::default().fg(UI_FG).bg(UI_PANEL);
         let highlight_style = header_style.fg(UI_YELLOW).add_modifier(Modifier::BOLD);
         let hint_style = header_style.fg(UI_DIM);
@@ -663,12 +703,15 @@ impl App {
 
         if self.pending_cancel {
             spans.push(Span::styled(
-                format!(" {}{}", self.model, plugin_label),
+                format!(" {}{}{}", self.model, plugin_label, effort_label),
                 cancel_style.add_modifier(Modifier::BOLD),
             ));
             spans.push(Span::styled(cancel_label, cancel_style));
         } else {
-            spans.push(Span::styled(format!(" {}{}", self.model, plugin_label), highlight_style));
+            spans.push(Span::styled(
+                format!(" {}{}{}", self.model, plugin_label, effort_label),
+                highlight_style,
+            ));
             spans.push(Span::styled(" | ", header_style));
             spans.push(Span::styled(
                 "Shift+Enter newline · Wheel/↑↓/PgUp/PgDn scroll · Ctrl+C quit",
@@ -752,6 +795,79 @@ impl App {
 
         let paragraph = Paragraph::new(visible_lines).style(base_style());
         frame.render_widget(paragraph, area);
+
+        if let Some(sel) = self.effort_picker {
+            let menu_width: u16 = 34;
+            let menu_height = Effort::ALL.len() as u16 + 2;
+            let menu_area = ratatui::layout::Rect {
+                x: area.x + 2,
+                y: area.y + area.height.saturating_sub(menu_height),
+                width: menu_width.min(area.width),
+                height: menu_height.min(area.height),
+            };
+            let block = Block::default()
+                .title(" /effort ")
+                .borders(Borders::ALL)
+                .style(base_style())
+                .border_style(fg_style(UI_YELLOW));
+            let inner = block.inner(menu_area);
+            frame.render_widget(block, menu_area);
+            let lines: Vec<Line> = Effort::ALL
+                .iter()
+                .enumerate()
+                .map(|(i, e)| {
+                    let marker = if i == sel { "> " } else { "  " };
+                    let text = format!("{}{:<6} {}", marker, e.name(), e.description());
+                    if i == sel {
+                        Line::from(Span::styled(
+                            text,
+                            fg_style(UI_YELLOW).add_modifier(Modifier::BOLD),
+                        ))
+                    } else {
+                        Line::from(Span::styled(text, base_style()))
+                    }
+                })
+                .collect();
+            let paragraph = Paragraph::new(lines).style(base_style());
+            frame.render_widget(paragraph, inner);
+        }
+    }
+
+    fn set_effort(&mut self, effort: Effort) {
+        self.effort = effort;
+        let _ = self.cmd_tx.send(AgentCommand::SetEffort(effort));
+        self.items.push(ConversationItem::Error(format!(
+            "Thinking effort set to {} ({})",
+            effort.name(),
+            effort.description()
+        )));
+    }
+
+    fn handle_command(&mut self, input: &str) {
+        let mut parts = input.trim().split_whitespace();
+        match parts.next() {
+            Some("/effort") => match parts.next() {
+                None => {
+                    let current = Effort::ALL
+                        .iter()
+                        .position(|e| *e == self.effort)
+                        .unwrap_or(0);
+                    self.effort_picker = Some(current);
+                }
+                Some(level) => match Effort::from_name(level) {
+                    Some(e) => self.set_effort(e),
+                    None => self.items.push(ConversationItem::Error(format!(
+                        "Unknown effort level '{}' (expected off|low|med|high)",
+                        level
+                    ))),
+                },
+            },
+            Some(cmd) => self.items.push(ConversationItem::Error(format!(
+                "Unknown command '{}' (available: /effort)",
+                cmd
+            ))),
+            None => {}
+        }
     }
 
     fn draw_input(&mut self, frame: &mut Frame, area: ratatui::layout::Rect) {

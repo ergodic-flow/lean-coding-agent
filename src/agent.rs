@@ -27,8 +27,58 @@ pub struct ImageAttachment {
     pub media_type: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Effort {
+    Off,
+    Low,
+    Med,
+    High,
+}
+
+impl Effort {
+    pub const ALL: [Effort; 4] = [Effort::Off, Effort::Low, Effort::Med, Effort::High];
+
+    pub fn budget(self) -> Option<u64> {
+        match self {
+            Effort::Off => None,
+            Effort::Low => Some(512),
+            Effort::Med => Some(2048),
+            Effort::High => Some(8192),
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Effort::Off => "off",
+            Effort::Low => "low",
+            Effort::Med => "med",
+            Effort::High => "high",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Effort::Off => "unlimited thinking",
+            Effort::Low => "max 512 thinking tokens",
+            Effort::Med => "max 2048 thinking tokens",
+            Effort::High => "max 8192 thinking tokens",
+        }
+    }
+
+    pub fn from_name(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "off" => Some(Effort::Off),
+            "low" => Some(Effort::Low),
+            "med" | "medium" => Some(Effort::Med),
+            "high" => Some(Effort::High),
+            _ => None,
+        }
+    }
+}
+
 pub enum AgentCommand {
     Send { text: String, images: Vec<ImageAttachment> },
+    SetEffort(Effort),
 }
 
 pub enum UiEvent {
@@ -73,6 +123,7 @@ pub fn run(
     );
     let mut messages = vec![Message::System { content: prompt }];
     let mut all_tools = tools::definitions();
+    let mut effort = Effort::Off;
 
     let mut plugins = PluginManager::new();
     if let Some(ref dir) = plugin_dir {
@@ -95,6 +146,9 @@ pub fn run(
         };
 
         match cmd {
+            AgentCommand::SetEffort(e) => {
+                effort = e;
+            }
             AgentCommand::Send { text, images } => {
                 let content = if images.is_empty() {
                     UserContent::Text(text.clone())
@@ -118,6 +172,7 @@ pub fn run(
                     &model,
                     &provider,
                     interleaved,
+                    effort,
                     &mut messages,
                     &all_tools,
                     &plugins,
@@ -137,6 +192,7 @@ fn agent_loop(
     model: &str,
     provider: &Option<String>,
     interleaved: bool,
+    effort: Effort,
     messages: &mut Vec<Message>,
     tool_defs: &[api::ToolDef],
     plugins: &PluginManager,
@@ -156,6 +212,7 @@ fn agent_loop(
             stream_options: Some(StreamOptions { include_usage: true }),
             provider: provider.clone(),
             interleaved: interleaved.then_some(true),
+            thinking_budget_tokens: effort.budget(),
         };
 
         let start = Instant::now();
